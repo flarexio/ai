@@ -1,18 +1,34 @@
 from pydantic import BaseModel, Field
 
 from kit import Endpoint
+from protocol import ChatContext, ChatServiceProtocol, Message
+
 
 class CreateSessionResponse(BaseModel):
     session_id: str
 
 
-class CreateSessionEndpoint(Endpoint[None, CreateSessionResponse]):
+class CreateSessionEndpoint(Endpoint[ChatServiceProtocol, None, CreateSessionResponse]):
     async def handle(self) -> CreateSessionResponse:
         session_id = self.service.create_session()
         return CreateSessionResponse(session_id=session_id)
 
 
+class ListSessionsResponse(BaseModel):
+    sessions: list[str]
+
+
+class ListSessionsEndpoint(Endpoint[ChatServiceProtocol, None, ListSessionsResponse]):
+    async def handle(self) -> ListSessionsResponse:
+        sessions = self.service.list_sessions()
+        return ListSessionsResponse(sessions=sessions)
+
+
 class SendMessageRequest(BaseModel):
+    app_name: str = Field(
+        description="The name of the app to send the message to",
+        default="basic",
+    )
     session_id: str | None = Field(
         description="The session ID to send the message to",
         default=None,
@@ -24,7 +40,10 @@ class SendMessageRequest(BaseModel):
     model_config = {
         "json_schema_extra": {
             "examples": [
-                {"content": "Hi, my name is Mirror."},
+                {
+                    "app_name": "basic",
+                    "content": "Hi, my name is Mirror.",
+                },
             ]
         }
     }
@@ -34,7 +53,24 @@ class SendMessageResponse(BaseModel):
     content: str
 
 
-class SendMessageEndpoint(Endpoint[SendMessageRequest, SendMessageResponse]):
+class SendMessageEndpoint(Endpoint[ChatServiceProtocol, SendMessageRequest, SendMessageResponse]):
     async def handle(self, request: SendMessageRequest) -> SendMessageResponse:
-        content = self.service.send_message(request.session_id, request.content)
+        ctx = ChatContext(app_name=request.app_name, session_id=request.session_id)
+        content = self.service.send_message(ctx, request.content)
         return SendMessageResponse(content=content)
+
+
+class ListMessagesRequest(BaseModel):
+    session_id: str = Field(
+        description="The session ID to list the messages from",
+    )
+
+
+class ListMessagesResponse(BaseModel):
+    messages: list[Message]
+
+
+class ListMessagesEndpoint(Endpoint[ChatServiceProtocol, ListMessagesRequest, ListMessagesResponse]):
+    async def handle(self, request: ListMessagesRequest) -> ListMessagesResponse:
+        messages = self.service.list_messages(request.session_id)
+        return ListMessagesResponse(messages=messages)

@@ -1,53 +1,41 @@
-from typing import Protocol
 from ulid import ULID
 
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import START, END, MessagesState, StateGraph
-from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
-
-class ChatServiceProtocol(Protocol):
-    """A protocol for a chat service."""
-
-    def create_session(self) -> str:
-        """ Create a new chat session."""
-        ...
-
-    def send_message(self, session_id: str, content: str) -> str:
-        """Send a message to the chat session."""
-        ...
+from decorator import logging
+from persistence import RepositoryProtocol
+from protocol import AIAppProtocol, ChatContext, ChatServiceProtocol, Message
 
 
-llm = ChatOpenAI(model="gpt-4o-mini")
-
-def call_model(state: MessagesState):
-    response = llm.invoke(state["messages"])
-    return {"messages": [response]}
-
-
+@logging
 class ChatService(ChatServiceProtocol):
-    __slots__ = ["app"]
+    __slots__ = ["apps", "repo"]
 
-    def __init__(self):
-        # Define the workflow
-        workflow = StateGraph(MessagesState)
+    def __init__(self, repo: RepositoryProtocol):
+        self.apps: dict[str, AIAppProtocol] = {}
+        self.repo = repo
 
-        # Add the nodes and edges
-        workflow.add_edge(START, "model")
-        workflow.add_node("model", call_model)
-        workflow.add_edge("model", END)
+    def add_app(self, name: str, app: AIAppProtocol) -> None:
+        self.apps[name] = app
 
-        # Add memory
-        memory = MemorySaver()
-        self.app = workflow.compile(checkpointer=memory)
+    def find_app(self, name: str) -> AIAppProtocol:
+        if name not in self.apps:
+            raise ValueError("app not found")
+        return self.apps[name]
 
     def create_session(self) -> str:
-        ulid = ULID()
-        return str(ulid)
+        ulid = str(ULID())
+        self.repo.store_session(ulid)
+        return ulid
 
-    def send_message(self, session_id: str, content: str) -> str:
-        config = { "configurable": { "thread_id": session_id } }
+    def list_sessions(self) -> list[str]:
+        return self.repo.list_sessions()
 
-        messages = [HumanMessage(content=content)]
-        response = self.app.invoke({"messages": messages}, config)
-        return response["messages"][-1].content
+    def send_message(self, ctx: ChatContext, content: str) -> str:
+        if not self.repo.find_session(ctx.session_id):
+            raise ValueError("session not found")
+
+        app = self.find_app(ctx.app_name)
+        response = app.invoke(content, ctx.session_id)
+        return response
+
+    def list_messages(self, session_id: str) -> list[Message]:
+        return self.repo.list_messages(session_id)

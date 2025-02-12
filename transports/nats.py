@@ -1,8 +1,9 @@
 import nats
 from nats.aio.msg import Msg
 
-from endpoint import SendMessageRequest
+from endpoint import ListMessagesRequest, SendMessageRequest
 from kit import EndpointProtocol
+
 
 class NATSTransport:
     __slots__ = ["endpoints", "nc", "url", "creds"]
@@ -20,6 +21,11 @@ class NATSTransport:
         resp = await endpoint.handle()
         await msg.respond(resp.session_id.encode("utf-8"))
 
+    async def list_sessions_handler(self, msg: Msg):
+        endpoint = self.endpoints["list_sessions"]
+        resp = await endpoint.handle()
+        await msg.respond(resp.model_dump_json().encode("utf-8"))
+
     async def send_message_handler(self, msg: Msg):
         endpoint = self.endpoints["send_message"]
         req = SendMessageRequest(
@@ -29,10 +35,20 @@ class NATSTransport:
         resp = await endpoint.handle(req)
         await msg.respond(resp.content.encode("utf-8"))
 
+    async def list_messages_handler(self, msg: Msg):
+        endpoint = self.endpoints["list_messages"]
+        req = ListMessagesRequest(
+            session_id=msg.subject.split(".")[2],
+        )
+        resp = await endpoint.handle(req)
+        await msg.respond(resp.model_dump_json().encode("utf-8"))
+
     async def serve(self):
         nc = await nats.connect(self.url, user_credentials=self.creds)
         await nc.subscribe("ai.sessions.create", cb=self.create_session_handler)
+        await nc.subscribe("ai.sessions.list", cb=self.list_sessions_handler)
         await nc.subscribe("ai.sessions.*.messages.send", cb=self.send_message_handler)
+        await nc.subscribe("ai.sessions.*.messages.list", cb=self.list_messages_handler)
         self.nc = nc
 
     async def shutdown(self):

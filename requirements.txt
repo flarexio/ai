@@ -2,6 +2,8 @@ fastapi==0.115.8
 langchain_core==0.3.33
 langchain_openai==0.3.3
 langgraph==0.2.69
+langgraph-checkpoint-postgres==2.0.13
+psycopg==3.2.4
 pydantic==2.10.6
 python-ulid==3.0.0
 nats-py[nkeys]==2.9.0
