@@ -2,6 +2,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 
 from endpoint import (
+    CreateSessionRequest,
     ListMessagesRequest,
     ListMessagesResponse,
     ListSessionsResponse,
@@ -23,8 +24,8 @@ class HTTPTransport:
 
     def _setup_routes(self, app: FastAPI):
         @app.post("/sessions", tags=["sessions"])
-        async def create_session() -> str:
-            return await self._create_session_handler()
+        async def create_session(request: CreateSessionRequest) -> str:
+            return await self._create_session_handler(request)
 
         @app.get("/sessions", tags=["sessions"])
         async def list_sessions() -> ListSessionsResponse:
@@ -43,12 +44,12 @@ class HTTPTransport:
     def set_endpoints(self, endpoints: dict[str, EndpointProtocol]):
         self.endpoints = endpoints
 
-    async def _create_session_handler(self) -> str:
+    async def _create_session_handler(self, req: CreateSessionRequest) -> str:
         if "create_session" not in self.endpoints:
             raise HTTPException(status_code=404, detail="endpoint not found")
 
         endpoint = self.endpoints["create_session"]
-        resp = await endpoint.handle()
+        resp = await endpoint.handle(req)
         return resp.session_id
 
     async def _list_sessions_handler(self) -> ListSessionsResponse:

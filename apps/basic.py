@@ -30,6 +30,9 @@ class BasicApp(AIAppProtocol):
         response = self.llm.invoke(state["messages"])
         return {"messages": [response]}
 
+    def init_session(self, session_id: str):
+        pass
+
     def invoke(self, content: str, session_id: str) -> str:
         config = { "configurable": { "thread_id": session_id } }
         messages = [HumanMessage(content=content)]

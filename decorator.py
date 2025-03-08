@@ -1,6 +1,6 @@
 from typing import Type
 
-from protocol import AIAppProtocol, ChatServiceProtocol, Message
+from protocol import AIAppProtocol, ChatContext, ChatServiceProtocol, Message, Session
 
 
 def logging(cls: Type[ChatServiceProtocol]) -> Type[ChatServiceProtocol]:
@@ -19,19 +19,19 @@ def logging(cls: Type[ChatServiceProtocol]) -> Type[ChatServiceProtocol]:
             print(f"app found | app={name}")
             return app
 
-        def create_session(self) -> str:
-            session_id = self.next.create_session()
-            print(f"session created | session_id={session_id}")
+        def create_session(self, app_name: str) -> str:
+            session_id = self.next.create_session(app_name)
+            print(f"session created | app_name={app_name} | session_id={session_id}")
             return session_id
 
-        def list_sessions(self) -> list[str]:
+        def list_sessions(self) -> list[Session]:
             sessions = self.next.list_sessions()
             print(f"sessions listed | count={len(sessions)}")
             return sessions
 
-        def send_message(self, content: str, session_id: str) -> str:
-            response = self.next.send_message(content, session_id)
-            print(f"message sent | session_id={session_id}")
+        def send_message(self, ctx: ChatContext, content: str) -> str:
+            response = self.next.send_message(ctx, content)
+            print(f"message sent | session_id={ctx.session_id}")
             print(f"Human: {content}")
             print(f"AI: {response}")
             print("-" * 100)

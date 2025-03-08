@@ -6,6 +6,9 @@ from pydantic import BaseModel
 class Role(str, Enum):
     HUMAN = "human"
     AI = "ai"
+    SYSTEM = "system"
+    TOOL = "tool"
+
 
     def __str__(self) -> str:
         match self:
@@ -13,6 +16,10 @@ class Role(str, Enum):
                 return "Human"
             case Role.AI:
                 return "AI"
+            case Role.SYSTEM:
+                return "System"
+            case Role.TOOL:
+                return "Tool"
             case _:
                 raise self.value
 
@@ -27,14 +34,22 @@ class Message(BaseModel):
 class AIAppProtocol(Protocol):
     """A protocol for an AI app."""
 
+    def init_session(self, session_id: str) -> None:
+        """Initialize a new chat session."""
+        ...
+
     def invoke(self, content: str, session_id: str) -> str:
         """Invoke the app."""
         ...
 
 
 class ChatContext(BaseModel):
-    app_name: str
     session_id: str
+
+
+class Session(BaseModel):
+    id: str
+    app_name: str
 
 
 class ChatServiceProtocol(Protocol):
@@ -48,11 +63,11 @@ class ChatServiceProtocol(Protocol):
         """Find an app by name."""
         ... 
 
-    def create_session(self) -> str:
+    def create_session(self, app_name: str) -> str:
         """ Create a new chat session."""
         ...
 
-    def list_sessions(self) -> list[str]:
+    def list_sessions(self) -> list[Session]:
         """List all chat sessions."""
         ...
 
@@ -65,18 +80,19 @@ class ChatServiceProtocol(Protocol):
         ...
 
 
+
 class RepositoryProtocol(Protocol):
     """A repository for storing and retrieving sessions and messages."""
 
-    def store_session(self, session_id: str) -> None:
+    def store_session(self, session_id: str, app_name: str) -> None:
         """Store a new session."""
         ...
 
-    def list_sessions(self) -> list[str]:
+    def list_sessions(self) -> list[Session]:
         """List all sessions."""
         ...
 
-    def find_session(self, session_id: str) -> str:
+    def find_session(self, session_id: str) -> Session:
         """Find a session by id."""
         ...
     

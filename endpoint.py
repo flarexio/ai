@@ -4,13 +4,19 @@ from kit import Endpoint
 from protocol import ChatContext, ChatServiceProtocol, Message
 
 
+class CreateSessionRequest(BaseModel):
+    app_name: str = Field(
+        description="The name of the app to create a session for",
+    )
+
+
 class CreateSessionResponse(BaseModel):
     session_id: str
 
 
-class CreateSessionEndpoint(Endpoint[ChatServiceProtocol, None, CreateSessionResponse]):
-    async def handle(self) -> CreateSessionResponse:
-        session_id = self.service.create_session()
+class CreateSessionEndpoint(Endpoint[ChatServiceProtocol, CreateSessionRequest, CreateSessionResponse]):
+    async def handle(self, request: CreateSessionRequest) -> CreateSessionResponse:
+        session_id = self.service.create_session(request.app_name)
         return CreateSessionResponse(session_id=session_id)
 
 
@@ -25,10 +31,6 @@ class ListSessionsEndpoint(Endpoint[ChatServiceProtocol, None, ListSessionsRespo
 
 
 class SendMessageRequest(BaseModel):
-    app_name: str = Field(
-        description="The name of the app to send the message to",
-        default="basic",
-    )
     session_id: str | None = Field(
         description="The session ID to send the message to",
         default=None,
@@ -41,7 +43,6 @@ class SendMessageRequest(BaseModel):
         "json_schema_extra": {
             "examples": [
                 {
-                    "app_name": "basic",
                     "content": "Hi, my name is Mirror.",
                 },
             ]
@@ -55,7 +56,7 @@ class SendMessageResponse(BaseModel):
 
 class SendMessageEndpoint(Endpoint[ChatServiceProtocol, SendMessageRequest, SendMessageResponse]):
     async def handle(self, request: SendMessageRequest) -> SendMessageResponse:
-        ctx = ChatContext(app_name=request.app_name, session_id=request.session_id)
+        ctx = ChatContext(session_id=request.session_id)
         content = self.service.send_message(ctx, request.content)
         return SendMessageResponse(content=content)
 

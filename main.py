@@ -5,6 +5,7 @@ import signal
 from langgraph.checkpoint.postgres import PostgresSaver
 
 from apps.basic import BasicApp
+from apps.iiot import IIoTApp
 from endpoint import (
     CreateSessionEndpoint,
     ListSessionsEndpoint,
@@ -37,6 +38,7 @@ async def main():
 
         # Setup apps
         svc.add_app("basic", BasicApp(memory))
+        svc.add_app("iiot", IIoTApp(memory))
 
         # Setup endpoints
         endpoints: dict[str, EndpointProtocol] = {
