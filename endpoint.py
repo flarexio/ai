@@ -16,7 +16,7 @@ class CreateSessionResponse(BaseModel):
 
 class CreateSessionEndpoint(Endpoint[ChatServiceProtocol, CreateSessionRequest, CreateSessionResponse]):
     async def handle(self, request: CreateSessionRequest) -> CreateSessionResponse:
-        session_id = self.service.create_session(request.app_name)
+        session_id = await self.service.create_session(request.app_name)
         return CreateSessionResponse(session_id=session_id)
 
 
@@ -26,7 +26,7 @@ class ListSessionsResponse(BaseModel):
 
 class ListSessionsEndpoint(Endpoint[ChatServiceProtocol, None, ListSessionsResponse]):
     async def handle(self) -> ListSessionsResponse:
-        sessions = self.service.list_sessions()
+        sessions = await self.service.list_sessions()
         return ListSessionsResponse(sessions=sessions)
 
 
@@ -57,8 +57,8 @@ class SendMessageResponse(BaseModel):
 class SendMessageEndpoint(Endpoint[ChatServiceProtocol, SendMessageRequest, SendMessageResponse]):
     async def handle(self, request: SendMessageRequest) -> SendMessageResponse:
         ctx = ChatContext(session_id=request.session_id)
-        content = self.service.send_message(ctx, request.content)
-        return SendMessageResponse(content=content)
+        resp = await self.service.send_message(ctx, request.content)
+        return SendMessageResponse(content=resp)
 
 
 class ListMessagesRequest(BaseModel):
@@ -73,5 +73,5 @@ class ListMessagesResponse(BaseModel):
 
 class ListMessagesEndpoint(Endpoint[ChatServiceProtocol, ListMessagesRequest, ListMessagesResponse]):
     async def handle(self, request: ListMessagesRequest) -> ListMessagesResponse:
-        messages = self.service.list_messages(request.session_id)
+        messages = await self.service.list_messages(request.session_id)
         return ListMessagesResponse(messages=messages)

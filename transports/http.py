@@ -1,5 +1,6 @@
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from endpoint import (
     CreateSessionRequest,
@@ -11,6 +12,13 @@ from endpoint import (
 from kit import EndpointProtocol
 
 
+# 可允許的前端來源清單
+origins = [
+    "http://localhost:4200",
+    "http://10.8.0.1:4200",
+]
+
+
 class HTTPTransport:
     __slots__ = ["app", "config", "endpoints"]
 
@@ -18,6 +26,15 @@ class HTTPTransport:
         app = FastAPI(
             title="AI Service",
         )
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
         self.config = uvicorn.Config(app, host=host, port=port)
         self.endpoints: dict[str, EndpointProtocol] = {}
         self._setup_routes(app)

@@ -1,4 +1,6 @@
 # Python cache files
 __pycache__/
+.pytest_cache/
+.venv/
 *.py[cod]
 *$py.class

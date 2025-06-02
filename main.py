@@ -1,8 +1,11 @@
 import asyncio
+import contextlib
 import os
 import signal
 
-from langgraph.checkpoint.postgres import PostgresSaver
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.store.postgres import AsyncPostgresStore
 
 from apps.basic import BasicApp
 from apps.iiot import IIoTApp
@@ -13,74 +16,111 @@ from endpoint import (
     ListMessagesEndpoint,
 )
 from kit import EndpointProtocol
-from persistence import DBRepository
+from persistences.db import ChatDatabaseRepository, IIoTMongoDBRepository
 from service import ChatService
 from transports.http import HTTPTransport
 from transports.nats import NATSTransport
 
-
-DB_URL = os.getenv("DB_URL")
+DB_ADDRESS = os.getenv("DB_HOST") + ":" + os.getenv("DB_PORT")
 DB_USERNAME = os.getenv("DB_USERNAME")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_URL= f"postgres://{DB_USERNAME}:{DB_PASSWORD}@{DB_ADDRESS}/ai"
 
 NATS_URL = os.getenv("NATS_URL")
 NATS_CREDS = os.getenv("NATS_CREDS")
 
+MONGO_URL = os.getenv("MONGO_HOST") + ":" + os.getenv("MONGO_PORT")
+MONGO_AUTH = os.getenv("MONGO_USERNAME") + ":" + os.getenv("MONGO_PASSWORD")
+MONGO_URI = f"mongodb://{MONGO_AUTH}@{MONGO_URL}"
+
+
 async def main():
-    DB_URI = f"postgres://{DB_USERNAME}:{DB_PASSWORD}@{DB_URL}/ai"
-    with PostgresSaver.from_conn_string(DB_URI) as memory:
-        # Setup repository
-        memory.setup()
-        repo = DBRepository(memory)
+    try:
+        async with (
+            AsyncPostgresSaver.from_conn_string(DB_URL) as memory, 
+            AsyncPostgresStore.from_conn_string(DB_URL, index={
+                "dims": 1536,
+                "embed": "openai:text-embedding-3-small",
+            }) as store,
+            MultiServerMCPClient(
+                {
+                    "iiot": {
+                        "command": "iiot_mcp",
+                        "args": [
+                            "--creds", "/home/ar0660/.flarex/edge/user.creds",
+                        ],
+                        "transport": "stdio",
+                    }
+                },
+            ) as mcp_client,
+        ):
+            # Create the chat service
+            await memory.setup()
+            await store.setup()
 
-        # Setup service
-        svc = ChatService(repo)
+            # Add repositories
+            chats = ChatDatabaseRepository(memory)
+            await chats.migrate()
 
-        # Setup apps
-        svc.add_app("basic", BasicApp(memory))
-        svc.add_app("iiot", IIoTApp(memory))
+            # Create the chat service
+            svc = ChatService(chats)
 
-        # Setup endpoints
-        endpoints: dict[str, EndpointProtocol] = {
-            "create_session": CreateSessionEndpoint(svc),
-            "list_sessions": ListSessionsEndpoint(svc),
-            "send_message": SendMessageEndpoint(svc),
-            "list_messages": ListMessagesEndpoint(svc),
-        }
+            # Add AI apps
+            svc.add_app("basic", BasicApp(memory, store))
 
-        # Setup transports
-        http = HTTPTransport(host="0.0.0.0", port=8000)
-        nats = NATSTransport(
-            url=NATS_URL,
-            creds=NATS_CREDS,
-        )
+            # IIoT app
+            iiot_repo = IIoTMongoDBRepository(MONGO_URI)
+            iiot_tools = mcp_client.server_name_to_tools["iiot"]
+            svc.add_app("iiot", IIoTApp(memory, iiot_repo, iiot_tools))
 
-        # Set endpoints
-        http.set_endpoints(endpoints)
-        nats.set_endpoints(endpoints)
+            # Setup endpoints
+            endpoints: dict[str, EndpointProtocol] = {
+                "create_session": CreateSessionEndpoint(svc),
+                "list_sessions": ListSessionsEndpoint(svc),
+                "send_message": SendMessageEndpoint(svc),
+                "list_messages": ListMessagesEndpoint(svc),
+            }
 
-        # Setup signal handler
-        stop = asyncio.Event()
-
-        def signal_handler():
-            print("Received signal to stop")
-            stop.set()
-
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            asyncio.get_running_loop().add_signal_handler(sig, signal_handler)
-
-        try:
-            # Start transports
-            await asyncio.gather(
-                http.serve(),
-                nats.serve(),
-                stop.wait(),
+            # Setup transports
+            http = HTTPTransport(host="0.0.0.0", port=8000)
+            nats = NATSTransport(
+                url=NATS_URL,
+                creds=NATS_CREDS,
             )
-        finally:
-            # Shutdown transports
-            print("Server shutdown")
-            await nats.shutdown()
+
+            # Set endpoints
+            http.set_endpoints(endpoints)
+            nats.set_endpoints(endpoints)
+
+            # Setup signal handler
+            stop = asyncio.Event()
+
+            def signal_handler():
+                print("Received signal to stop")
+                stop.set()
+
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                asyncio.get_running_loop().add_signal_handler(sig, signal_handler)
+
+            try:
+                # Start transports
+                await asyncio.gather(
+                    http.serve(),
+                    nats.serve(),
+                    stop.wait(),
+                )
+            except asyncio.CancelledError:
+                print("Async tasks cancelled, shutting down gracefully...")
+            finally:
+                # Shutdown transports
+                print("Server shutdown")
+                await nats.shutdown()
+    except* ProcessLookupError:
+        print("Suppressed ProcessLookupError during MCP client shutdown.")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Server stopped by user")
