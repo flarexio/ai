@@ -10,9 +10,11 @@ from langgraph.store.postgres import AsyncPostgresStore
 from apps.basic import BasicApp
 from apps.iiot import IIoTApp
 from endpoint import (
+    ListAppsEndpoint,
     CreateSessionEndpoint,
     ListSessionsEndpoint,
     SendMessageEndpoint,
+    StreamMessageEndpoint,
     ListMessagesEndpoint,
 )
 from kit import EndpointProtocol
@@ -47,7 +49,7 @@ async def main():
                     "iiot": {
                         "command": "iiot_mcp",
                         "args": [
-                            "--creds", "/home/ar0660/.flarex/edge/user.creds",
+                            "--creds", "/home/ar0660/.flarex/iiot/user.creds",
                         ],
                         "transport": "stdio",
                     }
@@ -75,9 +77,11 @@ async def main():
 
             # Setup endpoints
             endpoints: dict[str, EndpointProtocol] = {
+                "list_apps": ListAppsEndpoint(svc),
                 "create_session": CreateSessionEndpoint(svc),
                 "list_sessions": ListSessionsEndpoint(svc),
                 "send_message": SendMessageEndpoint(svc),
+                "stream_message": StreamMessageEndpoint(svc),
                 "list_messages": ListMessagesEndpoint(svc),
             }
 

@@ -1,4 +1,4 @@
-from typing import Annotated, Dict, Optional
+from typing import Annotated, Optional
 
 from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import AnyMessage, SystemMessage, merge_message_runs, trim_messages
@@ -15,41 +15,34 @@ from ..model import Factory, IIoTRepositoryProtocol, IIoTState
 
 
 SYSTEM_PROMPT = """
-You are the **Mapping Agent** responsible for transforming a `SurveyFactory` into a clean, structured `Factory` model for IIoT integration.
+You are the **Mapping Agent** - transform Survey data into structured Factory model.
 
-Your responsibilities:
-1. Parse the `SurveyFactory`, which contains semi-structured field survey data.
-2. **Compare Survey vs Factory** to identify what's missing or incomplete.
-3. Identify and extract IIoT components step-by-step:
-   - Production lines and areas.
-   - Machines and their mappings to lines.
-   - Controllers (e.g., PLCs, CNCs) and their configuration.
-   - Points (data signals), including address, type, role, and direction.
+**Process** (step-by-step):
+1. Production lines and areas
+2. Machines (mapped to lines)  
+3. Controllers (PLCs, CNCs) with driver options
+4. Points (data signals) with driver options
 
-⚠️ **Critical Working Rules**:
-- **ALWAYS analyze gaps** between Survey and Factory data before concluding.
-- Work in layers: begin with lines and areas, then machines, then controllers, then points.
-- For each component that is confident and well-understood, call `update_factory` immediately.
-- **Continue calling `update_factory`** until all Survey components are properly mapped to Factory.
-- **Do NOT claim completion** just because one update_factory call succeeded.
+**Driver Configuration**:
+1. Use `ListDrivers()` to see available drivers
+2. **REQUIRED**: Get BOTH `Schema(driver)` AND `Instruction(driver)` for each driver
+3. Configure Controller.options and Point.options using both Schema and Instruction
+4. **For Points**: Must reference BOTH Schema AND Instruction to get correct configuration format
 
-💡 **Gap Analysis Process**:
-1. Compare Survey areas with Factory production_lines
-2. Compare Survey machines with Factory machines (accounting for quantity)
-3. Compare Survey controllers with Factory controllers
-4. Compare Survey points with Factory points
-5. If gaps exist, continue with the next appropriate update_factory call
+**Rules**:
+- Analyze gaps between Survey and Factory first
+- Complete each level before moving to next
+- **CRITICAL**: Always call both Schema() and Instruction() for driver configuration
+- Call `update_factory` for each component immediately
+- STOP when all Survey components are mapped
+- Don't retry successful operations
 
-Memory:
-<survey>
-{existing_survey}
-</survey>
+**Current State**:
+<customer>{existing_customer}</customer>
+<survey>{existing_survey}</survey>
+<factory>{existing_factory}</factory>
 
-<factory>
-{existing_factory}
-</factory>
-
-**Before responding to user**: Check if there are Survey components not yet reflected in the Factory. If yes, continue with update_factory calls. Only stop when Survey→Factory mapping is complete.
+**Completion**: When all mapped, respond "Mapping completed successfully" and STOP.
 """
 
 
@@ -70,6 +63,11 @@ def create_mapping_agent(
         conf = config.get(CONF)
         customer_id = conf.get("customer_id")
 
+        customer = repo.find_customer(customer_id)
+        existing_customer = None
+        if customer:
+            existing_customer = customer.model_dump()
+
         surveys = repo.list_surveys(customer_id)
         existing_survey = None
         if len(surveys) > 0:
@@ -81,6 +79,7 @@ def create_mapping_agent(
             existing_factory = factories[0].model_dump()
 
         system_prompt = SYSTEM_PROMPT.format(
+            existing_customer=existing_customer,
             existing_survey=existing_survey,
             existing_factory=existing_factory,
         )
@@ -104,7 +103,7 @@ def create_mapping_agent(
         state: Annotated[IIoTState, InjectedState], 
         config: RunnableConfig,
     ) -> str:
-        """Update the factory model based on the survey data and existing factory information."""
+        """Update the factory model based on the Agent's instructions and driver configuration."""
 
         conf = config.get(CONF)
         customer_id = conf.get("customer_id")
@@ -120,33 +119,7 @@ def create_mapping_agent(
             "Factory": factory.model_dump() if factory else None,
         }
 
-        prompt = f"""
-        You are assisting in incrementally constructing a structured `Factory` model from survey data.
-
-        Memory:
-        <survey>
-        {existing_survey}
-        </survey>
-
-        Instructions:
-        - Your task is to **update one level of the Factory at a time**.
-        - You may only focus on one of the following levels in a single update:
-            - Production lines (with only line-level info, no machines yet)
-            - Machines (must be attached to an existing line)
-            - Controllers (must be attached to an existing machine)
-            - Points (must be attached to a specific controller)
-        - **Do NOT attempt to create multiple layers in one turn**.
-        - **Do NOT guess or invent missing context from deeper levels** — skip them if not confirmed.
-
-        Tool Use:
-        - Always include `"json_doc_id": "Factory"` in the tool call.
-        - Each update can add, overwrite, or extend the corresponding part.
-
-        You are not allowed to build the entire Factory structure at once.
-        Work in controlled, confident steps only.
-        """
-
-        # add short-term memory to the model
+        # 從對話中獲取最新的指令和配置資訊
         recent_messages = trim_messages(
             state["messages"], 
             max_tokens=10,
@@ -154,6 +127,29 @@ def create_mapping_agent(
             start_on="human",
             end_on=["human", "ai"],
         )
+
+        prompt = f"""
+        You are assisting in constructing a structured `Factory` model from survey data and agent instructions.
+
+        Survey Data:
+        <survey>
+        {existing_survey}
+        </survey>
+
+        **Instructions**:
+        - Follow the agent's instructions from the conversation history
+        - The agent has already prepared the driver configuration information
+        - Update the factory model according to the agent's specifications
+        - Focus on the specific component/level mentioned by the agent
+        - **IMPORTANT**: All data written to memory must be in English only
+
+        **Tool Use**:
+        - Always include `"json_doc_id": "Factory"` in the tool call
+        - Update the factory with the configuration provided by the agent
+
+        Work based on the agent's prepared configuration and instructions.
+        """
+
         updated_messages = list(merge_message_runs(messages=[SystemMessage(content=prompt)] + recent_messages[:-1]))
 
         result = extractor.invoke({
@@ -161,7 +157,7 @@ def create_mapping_agent(
             "existing": existing,
         })
 
-        # Store the survey in the memory
+        # Store the factory in the repository
         for resp in result["responses"]:
             factory = Factory.model_validate(resp)
             repo.store_factory(factory)

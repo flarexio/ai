@@ -27,48 +27,41 @@ class RouteIntent(TypedDict):
 
 
 INTEGRATION_SUPERVISOR_PROMPT = """
-You are the **Integration Supervisor** for an IIoT system. 
+You are the **Integration Supervisor** for an IIoT system.
 
-Your job is to orchestrate the transformation of a surveyed factory (`SurveyFactory`) into a fully connected and deployable IIoT factory (`Factory`).
+Transform a surveyed factory (`SurveyFactory`) into a deployable IIoT factory (`Factory`) through:
 
-You operate in three stages:
+1. **Factory Mapping** - Structure factory objects (machines, zones, controllers, points)
+2. **Connectivity Testing** - Verify controller connections and test data points  
+3. **Deployment** - Generate final deployment configuration
 
-**Stage 1: Factory Mapping**
-- Convert the `SurveyFactory` into a structured `Factory` object.
-- Identify machines, production zones, controllers, and point definitions.
-- Do NOT validate connections yet — just create the structure.
-
-**Stage 2: Connectivity Testing**
-- Use the `CheckConnection` tool to verify controllers are reachable.
-- Use the `ReadPoints` tool to test data points.
-- Use protocol settings and address ranges from Factory data.
-
-**Stage 3: Deployment**
-- Generate final deployment configuration using the `ExportDeployment` tool.
-
-Memory:
+Current Factory State:
 <factory>
 {existing_factory}
 </factory>
 
-⚠️ **Critical Rules**:
-- **Never describe what you "will do"** - immediately route to the appropriate agent.
-- **Always use RouteIntent tool** to delegate work.
-- **NEVER invent or assume data that was not provided by the user** - only work with given information.
-- **Do NOT create fictional point data** (names, addresses, etc.) - ask user for missing information instead.
-- **Only perform tests explicitly requested by the user** - do not add extra testing steps.
+**Rules**:
+- **Always use RouteIntent tool** to delegate work - never describe plans
+- **Only use data provided by user** - ask for missing information instead of assuming
+- **Wait for user confirmation** before proceeding to next phase
 
-**Data Handling Rules**:
-- **Only use data explicitly provided by the user** in current or previous messages.
-- **Do NOT assume point names like "Temperature", "Pressure"** unless user specified them.
-- **Do NOT assume addresses like "40001", "40002"** unless user provided them.
-- **If missing information is needed, ask the user** instead of making assumptions.
+**CRITICAL - Valid Routes ONLY**:
+- **"mapping"** - For factory structure, driver configuration, point updates, or any factory model changes
+- **"connectivity"** - For connection testing and validation only
 
-**Routing Examples**:
-- "Test connection to 127.0.0.1:10502" → route to "connectivity" agent for connection test only
-- "Update controller address" → route to "mapping" agent  
-- "Test connection and update info" → route to "connectivity" agent, then "mapping" agent
-- "Read points from controller" → route to "connectivity" agent for point reading
+**Route Decision Logic**:
+- Need to create/modify factory structure? → Use "mapping"
+- Need to configure drivers or points? → Use "mapping" 
+- Need to test connections? → Use "connectivity"
+- Need to update any factory data? → Use "mapping"
+
+**Examples**:
+- "Configure temperature points" → "mapping"
+- "Set controller addresses" → "mapping"
+- "Test PLC connection" → "connectivity"
+- "Update point configuration" → "mapping"
+
+**Important**: After mapping is complete, present results to user for confirmation before connectivity testing.
 """
 
 
@@ -83,7 +76,7 @@ def create_integration_agent(
 ) -> CompiledGraph:
 
     # Create the agents
-    mapping_agent = create_mapping_agent(model, repo)
+    mapping_agent = create_mapping_agent(model, tools, repo)
     connectivity_agent = create_connectivity_agent(model, tools, repo)
     # deployment_agent = create_deployment_agent(model, repo)
 
@@ -126,6 +119,7 @@ def create_integration_agent(
         "mapping_agent", 
         "connectivity_agent",
         # "deployment_agent",
+        "handle_error",
     ]:
         message = state["messages"][-1]
         if len(message.tool_calls) == 0:
@@ -141,36 +135,59 @@ def create_integration_agent(
             # elif route == "deployment":
             #     return "deployment_agent"
             else:
-                raise ValueError
+                return "handle_error"
 
-    def call_mapping_agent(state: IIoTState, config: RunnableConfig) -> IIoTState:
+    def handle_error(state: IIoTState) -> IIoTState:
         ai_msg = state["messages"][-1]
         tool_call = ai_msg.tool_calls[0]
-
-        response = mapping_agent.invoke({
-            "messages": state["messages"][:-1],
-            "supervisor_message": tool_call["args"]["supervisor_message"],
-        }, config)
-
         tool_msg = ToolMessage(
-            content=response["messages"][-1].content,
+            content=f"error: unknown route {tool_call['args'].get('route', 'unknown')}",
             tool_call_id=tool_call["id"],
         )
         return {"messages": [tool_msg]}
 
+
+    async def call_mapping_agent(state: IIoTState, config: RunnableConfig) -> IIoTState:
+        ai_msg = state["messages"][-1]
+        tool_call = ai_msg.tool_calls[0]
+        tool_msg = ToolMessage(
+            content="initializing mapping agent",
+            tool_call_id=tool_call["id"],
+        )
+
+        try:
+            response = await mapping_agent.ainvoke({
+                "messages": state["messages"][:-1],
+                "supervisor_message": tool_call["args"]["supervisor_message"],
+            }, config)
+            tool_msg.content = response["messages"][-1].content
+        
+        except Exception as e:
+            print(f"Error in mapping agent: {e}")
+            tool_msg.content = f"error: {e}"
+
+        return {"messages": [tool_msg]}
+
+
     async def call_connectivity_agent(state: IIoTState, config: RunnableConfig) -> IIoTState:
         ai_msg = state["messages"][-1]
         tool_call = ai_msg.tool_calls[0]
-
-        response = await connectivity_agent.ainvoke({
-            "messages": state["messages"][:-1],
-            "supervisor_message": tool_call["args"]["supervisor_message"],
-        }, config)
-
         tool_msg = ToolMessage(
-            content=response["messages"][-1].content,
+            content="initializing connectivity agent",
             tool_call_id=tool_call["id"],
         )
+
+        try:
+            response = await connectivity_agent.ainvoke({
+                "messages": state["messages"][:-1],
+                "supervisor_message": tool_call["args"]["supervisor_message"],
+            }, config)
+            tool_msg.content = response["messages"][-1].content
+
+        except Exception as e:
+            print(f"Error in connectivity agent: {e}")
+            tool_msg.content = f"error: {e}"
+
         return {"messages": [tool_msg]}
 
 
@@ -182,6 +199,7 @@ def create_integration_agent(
     workflow.add_node("mapping_agent", call_mapping_agent)
     workflow.add_node("connectivity_agent", call_connectivity_agent)
     # workflow.add_node("deployment_agent", call_deployment_agent)
+    workflow.add_node("handle_error", handle_error)
 
     # Add edges
     workflow.add_edge(START, "supervisor")
@@ -189,6 +207,7 @@ def create_integration_agent(
     workflow.add_edge("mapping_agent", "supervisor")
     workflow.add_edge("connectivity_agent", "supervisor")
     # workflow.add_edge("deployment_agent", "supervisor")
+    workflow.add_edge("handle_error", "supervisor")
 
     return workflow.compile(
         checkpointer,

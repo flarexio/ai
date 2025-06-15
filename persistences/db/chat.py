@@ -33,7 +33,12 @@ class ChatDatabaseRepository(ChatRepositoryProtocol):
             SELECT id, app_name FROM sessions
         """
         result = await self.conn.execute(query)
-        return [Session(id=row["id"], app_name=row["app_name"]) for row in result]
+
+        sessions: list[Session] = []
+        async for row in result:
+            session = Session.model_validate(row)
+            sessions.append(session)
+        return sessions
 
     async def find_session(self, session_id: str) -> Session:
         query = """

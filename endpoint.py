@@ -1,8 +1,23 @@
 from pydantic import BaseModel, Field
+from typing import AsyncIterator
 
 from kit import Endpoint
-from protocol import ChatContext, ChatServiceProtocol, Message
+from protocol import AppInfo, ChatContext, ChatServiceProtocol, Message, MessageChunk, Session
 
+
+class ListAppsResponse(BaseModel):
+    apps: list[AppInfo] = []
+
+class ListAppsEndpoint(Endpoint[ChatServiceProtocol, None, ListAppsResponse]):
+    async def handle(self) -> ListAppsResponse:
+        apps = await self.service.list_apps()
+
+        infos: list[AppInfo] = []
+        for app in apps:
+            info = app.info()
+            infos.append(info)
+
+        return ListAppsResponse(apps=infos)
 
 class CreateSessionRequest(BaseModel):
     app_name: str = Field(
@@ -21,7 +36,7 @@ class CreateSessionEndpoint(Endpoint[ChatServiceProtocol, CreateSessionRequest, 
 
 
 class ListSessionsResponse(BaseModel):
-    sessions: list[str]
+    sessions: list[Session]
 
 
 class ListSessionsEndpoint(Endpoint[ChatServiceProtocol, None, ListSessionsResponse]):
@@ -31,35 +46,27 @@ class ListSessionsEndpoint(Endpoint[ChatServiceProtocol, None, ListSessionsRespo
 
 
 class SendMessageRequest(BaseModel):
-    session_id: str | None = Field(
-        description="The session ID to send the message to",
-        default=None,
-    )
-    content: str = Field(
-        description="The message to send to the session",
-    )
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "content": "Hi, my name is Mirror.",
-                },
-            ]
-        }
-    }
-
+    ctx: ChatContext = Field(ChatContext, description="The chat context, if available")
+    content: str = Field("", description="The message to send to the session")
 
 class SendMessageResponse(BaseModel):
     content: str
 
-
 class SendMessageEndpoint(Endpoint[ChatServiceProtocol, SendMessageRequest, SendMessageResponse]):
     async def handle(self, request: SendMessageRequest) -> SendMessageResponse:
-        ctx = ChatContext(session_id=request.session_id)
-        resp = await self.service.send_message(ctx, request.content)
+        resp = await self.service.send_message(request.ctx, request.content)
         return SendMessageResponse(content=resp)
 
+
+class StreamMessageRequest(BaseModel):
+    ctx: ChatContext = Field(ChatContext, description="The chat context, if available")
+    content: str = Field(description="The message to stream")
+
+class StreamMessageEndpoint(Endpoint[ChatServiceProtocol, StreamMessageRequest, AsyncIterator[MessageChunk]]):
+    async def handle(self, request: StreamMessageRequest) -> AsyncIterator[MessageChunk]:
+        stream: AsyncIterator[MessageChunk] = self.service.stream_message(request.ctx, request.content)
+        async for chunk in stream:
+            yield chunk
 
 class ListMessagesRequest(BaseModel):
     session_id: str = Field(

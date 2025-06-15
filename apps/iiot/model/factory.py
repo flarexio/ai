@@ -1,10 +1,15 @@
 from pydantic import BaseModel, Field
 from typing import Any, Dict, Literal, List
 
+
 AccessMode = Literal["read_only", "write_only", "read_write"]
 
 class Point(BaseModel):
-    """Represents any interaction point of a controller: signal, status, or parameter."""
+    """Represents any interaction point of a controller: signal, status, or parameter.
+    
+    The 'options' field must be configured based on the controller's driver schema.
+    Use Schema tool to query point configuration requirements for the specific driver.
+    """
     name: str = Field(
         description="Name of the point", 
         examples=["CurrentTemperature", "TargetTemperature"],
@@ -20,7 +25,9 @@ class Point(BaseModel):
         examples=["°C", "°F", "m/s", "rpm", "kW", "V", "A", "Pa", "mm"],
     )
     options: Dict[str, Any] = Field({}, 
-        description="Additional configuration options for the point",
+        description="""Driver-specific point configuration.
+        MUST be configured based on the controller's driver schema.
+        Query Schema tool with: Schema.get_point_schema(driver_name) to get required parameters.""",
         examples=[
             { "register": "coil", "address": 0, "offset": 0, "quantity": 1, "unit": "bit", "data_type": "bool" },
             { 
@@ -70,7 +77,12 @@ DriverExamples = [
 ]
 
 class Controller(BaseModel):
-    """Represents a controller (PLC, CNC, Sensor Node) managing system points."""
+    """Represents a controller (PLC, CNC, Sensor Node) managing system points.
+    
+    Before configuring this controller, use the Schema tool to query the specific 
+    driver schema based on the 'driver' field, then populate the 'options' field 
+    with the required driver-specific configuration parameters.
+    """
     controller_id: str = Field(description="Unique identifier for the controller")
     type: ControllerType = Field(description="Type of controller")
     vendor: str = Field(
@@ -83,15 +95,20 @@ class Controller(BaseModel):
         examples=ProtocolExamples,
     )
     driver: str = Field(
-        description="Driver or library used for communication", 
+        description="""Driver or library used for communication. 
+        IMPORTANT: Before configuring options, query the Schema tool with this driver name 
+        to get the required configuration parameters.""", 
         examples=DriverExamples,
     )
     address: str = Field(description="Network address or identifier of the controller")
     points: List[Point] = Field([], description="All logical points managed by the controller")
     options: Dict[str, Any] = Field({},
-        description="Additional configuration options for the controller",
+        description="""Driver-specific configuration options.
+        MUST be populated based on the schema retrieved from Schema tool using the 'driver' field.
+        Query format: Schema.get_driver_schema(driver_name)""",
         examples=[
             { "slave_id": 1 },
+            { "endpoint_url": "opc.tcp://192.168.1.100:4840", "security_mode": "None" },
         ]
     )
 

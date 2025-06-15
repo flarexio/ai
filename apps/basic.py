@@ -15,7 +15,7 @@ from langgraph_supervisor import create_supervisor
 from langmem import create_manage_memory_tool, create_search_memory_tool
 from trustcall import create_extractor
 
-from protocol import AIAppProtocol
+from protocol import AIAppProtocol, ChatContext
 
 
 class Triple(BaseModel): 
@@ -258,23 +258,23 @@ class BasicApp(AIAppProtocol):
             prompt=system_prompt,
         ).compile(checkpointer=memory, store=store)
 
-    def invoke(self, content: str, session_id: str) -> str:
+    def id(self) -> str:
+        return "basic"
+
+    def name(self) -> str:
+        return "Basic"
+
+    def description(self) -> str:
+        return "An AI app that manages semantic memory and user profiles."
+
+    def version(self) -> str:
+        return "1.0.0"
+
+    async def ainvoke(self, ctx: ChatContext, content: str) -> str:
         config = {
             "configurable": { 
-                "thread_id": session_id,
-                "user_id": "mirror520",
-            } 
-        }
-
-        messages = [HumanMessage(content=content)]
-        response = self.app.invoke({"messages": messages}, config)
-        return response["messages"][-1].content
-
-    async def ainvoke(self, content: str, session_id: str) -> str:
-        config = {
-            "configurable": { 
-                "thread_id": session_id,
-                "user_id": "mirror520",
+                "thread_id": ctx.session_id,
+                "user_id": ctx.user_id,
             } 
         }
 

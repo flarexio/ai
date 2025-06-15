@@ -1,6 +1,7 @@
 from enum import Enum
-from typing import Protocol
-from pydantic import BaseModel
+from typing import AsyncIterator, Optional, Protocol, Union
+from pydantic import BaseModel, Field
+import asyncio
 
 
 class Role(str, Enum):
@@ -20,29 +21,114 @@ class Role(str, Enum):
             case Role.TOOL:
                 return "Tool"
             case _:
-                raise self.value
+                raise ValueError(f"Unknown role: {self.value}")
 
+class ToolCall(BaseModel):
+    """A tool call in a chat session."""
+    id: Optional[str] = None
+    name: Optional[str] = None
+    args: Optional[str] = None
 
 class Message(BaseModel):
     """A message in a chat session."""
     role: Role
     content: str
 
+class HumanMessage(Message):
+    """A message from the human user."""
+    role: Role = Field(Role.HUMAN, frozen=True)
+
+class AIMessage(Message):
+    """A message from the AI."""
+    role: Role = Field(Role.AI, frozen=True)
+    tool_calls: Optional[list[ToolCall]] = None
+
+class SystemMessage(Message):
+    """A system message."""
+    role: Role = Field(Role.SYSTEM, frozen=True)
+
+class ToolMessage(Message):
+    """A message that represents a tool call."""
+    role: Role = Field(Role.TOOL, frozen=True)
+    tool_call_id: str
+
+AnyMessage = Union[HumanMessage, AIMessage, SystemMessage, ToolMessage]
+
+class MessageChunk(BaseModel):
+    """A chunk of a streaming message."""
+    nodes: list[str] = []
+    role: Role
+    content: str
+    tool_calls: list[ToolCall] = []
+    tool_call_id: Optional[str] = None
+    is_new: bool = False
+
+    def to_message(self) -> AnyMessage:
+        """Convert this chunk to a full message."""
+        if self.role == Role.HUMAN:
+            return HumanMessage(role=self.role, content=self.content)
+        elif self.role == Role.AI:
+            return AIMessage(role=self.role, content=self.content, tool_calls=self.tool_calls)
+        elif self.role == Role.SYSTEM:
+            return SystemMessage(role=self.role, content=self.content)
+        elif self.role == Role.TOOL:
+            return ToolMessage(role=self.role, content=self.content, tool_call_id=self.tool_call_id)
+        else:
+            raise ValueError(f"Unknown role: {self.role}")
+
+class ChatContext(BaseModel):
+    """Context for a chat session."""
+    session_id: Optional[str] = Field(None, 
+        description="The session ID for the chat context",
+    )
+    user_id: Optional[str] = Field(None,
+        description="The user ID for the chat context",
+    )
+    customer_id: Optional[str] = Field(None,
+        description="The customer ID for the chat context",
+    )
+
+class AppInfo(BaseModel):
+    """Information about an AI app."""
+    id: str = Field(description="The unique identifier for the app")
+    name: str = Field(description="The name of the app")
+    description: str = Field(description="A brief description of the app")
+    version: str = Field(default="1.0.0", description="The version of the app")
 
 class AIAppProtocol(Protocol):
-    """A protocol for an AI app."""
-
-    def invoke(self, content: str, session_id: str) -> str:
-        """Invoke the app."""
+    def id(self) -> str:
+        """Return the unique identifier for the app."""
         ...
 
-    async def ainvoke(self, content: str, session_id: str) -> str:
+    """A protocol for an AI app."""
+    def name(self) -> str:
+        """Return the name of the app."""
+        ...
+
+    def description(self) -> str:
+        """Return the description of the app."""
+        ...
+        
+    def version(self) -> str:
+        """Return the version of the app."""
+        ...
+         
+    def info(self) -> AppInfo:
+        """Return information about the app."""
+        return AppInfo(
+            id=self.id(),
+            name=self.name(),
+            description=self.description(),
+            version=self.version()
+        )
+
+    async def ainvoke(self, ctx: ChatContext, content: str) -> str:
         """Asynchronously invoke the app."""
         ...
 
-
-class ChatContext(BaseModel):
-    session_id: str
+    async def astream(self, ctx: ChatContext, content: str) -> AsyncIterator[MessageChunk]:
+        """Asynchronously stream the app's response."""
+        yield ...
 
 
 class Session(BaseModel):
@@ -61,6 +147,10 @@ class ChatServiceProtocol(Protocol):
         """Find an app by name."""
         ... 
 
+    async def list_apps(self) -> list[AIAppProtocol]:
+        """List all apps in the chat service."""
+        ...
+
     async def create_session(self, app_name: str) -> str:
         """ Create a new chat session."""
         ...
@@ -71,6 +161,10 @@ class ChatServiceProtocol(Protocol):
 
     async def send_message(self, ctx: ChatContext, content: str) -> str:
         """Send a message to the chat session."""
+        ...
+
+    async def stream_message(self, ctx: ChatContext, content: str) -> AsyncIterator[MessageChunk]:
+        """Stream messages from the chat session."""
         ...
 
     async def list_messages(self, session_id: str) -> list[Message]:

@@ -1,17 +1,16 @@
 from pydantic import Field
-from typing import Literal, TypedDict
+from typing import AsyncIterator, Literal, TypedDict
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, merge_message_runs, trim_messages
+from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage, ToolMessage, merge_message_runs, trim_messages
 from langchain_core.tools import BaseTool
 from langchain_core.runnables import RunnableConfig
-from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import CONF
 from langgraph.graph import StateGraph, START
 from trustcall import create_extractor
 
-from protocol import AIAppProtocol
+from protocol import AIAppProtocol, ChatContext, MessageChunk, Role, ToolCall
 
 from .model import Customer, IIoTRepositoryProtocol, IIoTState
 from .survey import create_survey_agent
@@ -32,94 +31,41 @@ class RouteIntent(TypedDict):
 SUPERVISOR_INSTRUCTION = """
 You are the **Supervisor** in an AI-powered IIoT project system.
 
-Your responsibilities:
-1. **Stage-aware routing**: Always check the customer's current `status` first to determine the workflow stage.
-2. **Context interpretation**: Interpret user requests based on the current stage context:
-   - If `customer.status` starts with `survey_`, ALL survey and factory-related information should be handled by the `survey` agent for the SurveyFactory model.
-   - If `customer.status` starts with `integration_`, ALL factory-related information should be handled by the `integration` agent for the Factory model.
-   - Only route to `update_customer` for explicit customer metadata changes (company name, location, industry, contact info, project status transitions).
+**Routing Rules:**
+1. **Check `customer.status` first** - determines workflow stage
+2. **Route by data type and stage:**
+   - `update_customer`: Customer business info (name, industry, contact) + status transitions
+   - `survey`: Survey data (equipment, areas, controllers) when status starts with `survey_`
+   - `integration`: Factory configuration when status starts with `integration_`
 
-3. **Data classification**:
-   - **Customer data (route to update_customer)**: 
-     * Company info: name, industry, description
-     * Contact details and business information
-     * Project phase transitions (status changes)
-   
-   - **Survey data (route to survey agent when status is survey_*)**:
-     * Survey metadata: survey_date, survey_id, factory_name
-     * Equipment and machines: descriptions, quantities, specifications
-     * Controllers and devices: PLCs, CNCs, sensors, gateways
-     * Production areas and zones: area codes, names, layout
-   
-   - **Factory/Integration data (route to integration agent when status is integration_*)**:
-     * Final factory configuration
-     * Device connections and protocols
-     * Deployment configurations
+3. **Stage transition control:**
+   - Always confirm before changing customer status
+   - Example: "You're in 'survey_completed'. Proceed to 'integration_in_progress'?"
 
-4. **Stage transition control**:
-   - Before changing workflow stages (customer status), always ask for user confirmation
-   - Example: "You're currently in 'survey_completed'. Do you want to proceed to 'integration_in_progress'?"
-   - Only update status after explicit user approval
-
-5. **Message routing priority**:
-   ```
-   1. Check current customer.status
-   2. Identify request type:
-      - Customer business info or status transition → update_customer
-      - Survey-related info (dates, equipment, areas, etc.) AND survey_* status → survey agent
-      - Factory/integration info AND integration_* status → integration agent
-      - Mismatched stage → inform user about stage limitation
-   3. Route accordingly
-   ```
-
-6. **Key routing examples**:
-   - "Update survey date" → survey agent (if in survey stage)
-   - "Add new machine to area A" → survey agent (if in survey stage)  
+4. **Key examples:**
+   - "Update survey date" → survey agent (if survey stage)
+   - "Add machine to area A" → survey agent (if survey stage)  
    - "Change company name" → update_customer
-   - "Change factory name" → survey agent (if in survey stage)
-   - "Change customer status to integration" → update_customer (with confirmation)
+   - "Change status to integration" → update_customer (with confirmation)
 
-7. After agent execution, provide clear feedback to the user about what was updated and in which context.
-
-Memory:
+**Memory:**
 <customer>
 {existing_customer}
 </customer>
 
-Available agents:
+**Available agents:**
+- `update_customer`: Customer data & status transitions ✅
+- `survey`: Survey & factory data collection ✅  
+- `quotation`: Cost estimation ❌ Unavailable
+- `integration`: Device configuration & deployment ✅
 
-- `update_customer`:  
-  - **Purpose**: Update persistent customer business information and project status transitions.  
-  - **Input**: A partial or full `Customer` object.
-  - **Output**: Confirmation of updated customer data.  
-  - **Status**: ✅ Available.
-
-- `survey`:  
-  - **Purpose**: Collect and structure all survey-related information including dates, equipment, areas, controllers, and field observations.  
-  - **Input**: User descriptions, images, or text related to surveys and factory assets.  
-  - **Output**: A structured `SurveyFactory` model.  
-  - **Status**: ✅ Available.
-
-- `quotation`:  
-  - **Purpose**: Generate cost estimates based on completed survey data.  
-  - **Input**: Survey structure and any project requirements.  
-  - **Output**: Structured quotation with cost breakdown.  
-  - **Status**: ❌ Unavailable.
-
-- `integration`:  
-  - **Purpose**: Assist in device connection and configuration based on survey and quotation data.  
-  - **Input**: Survey data, edge configuration, and quotation reference.  
-  - **Output**: Finalized `Factory` model and deployment config.  
-  - **Status**: ✅ Available.
-
-You may call multiple agents in sequence. After all required tasks are complete, respond to the user in natural language.
+Call agents sequentially as needed, then respond naturally to user.
 """
 
 class IIoTApp(AIAppProtocol):
     def __init__(self, memory: BaseCheckpointSaver, repo: IIoTRepositoryProtocol, tools: list[BaseTool]):
         # Setup the LLM
         model = ChatOpenAI(model="gpt-4.1-mini")
-        # model = ChatAnthropic(model="claude-3-5-haiku-20241022")
 
         # Create the agents
         customer_extractor = create_extractor(model, tools=[Customer], tool_choice="Customer")
@@ -136,6 +82,7 @@ class IIoTApp(AIAppProtocol):
         workflow.add_node("survey_agent", self.call_survey_agent)
         # workflow.add_node("quotation_agent", self.call_quotation_agent)
         workflow.add_node("integration_agent", self.call_integration_agent)
+        workflow.add_node("handle_error", self.handle_error)
 
         # Add edges
         workflow.add_edge(START, "supervisor")
@@ -144,6 +91,7 @@ class IIoTApp(AIAppProtocol):
         workflow.add_edge("survey_agent", "supervisor")
         # workflow.add_edge("quotation_agent", "supervisor")
         workflow.add_edge("integration_agent", "supervisor")
+        workflow.add_edge("handle_error", "supervisor")
 
         # Compile the workflow
         app = workflow.compile(checkpointer=memory, store=repo)
@@ -193,6 +141,7 @@ class IIoTApp(AIAppProtocol):
         "survey_agent",
         # "quotation_agent",
         "integration_agent",
+        "handle_error",
     ]:
         message = state["messages"][-1]
         if len(message.tool_calls) == 0:
@@ -210,7 +159,17 @@ class IIoTApp(AIAppProtocol):
             elif route == "integration":
                 return "integration_agent"
             else:
-                raise ValueError
+                return "handle_error"
+
+
+    def handle_error(self, state: IIoTState) -> IIoTState:
+        ai_msg = state["messages"][-1]
+        tool_call = ai_msg.tool_calls[0]
+        tool_msg = ToolMessage(
+            content=f"error: unknown route {tool_call['args'].get('route', 'unknown')}",
+            tool_call_id=tool_call["id"],
+        )
+        return {"messages": [tool_msg]}
 
 
     def update_customer(self, state: IIoTState, config: RunnableConfig) -> IIoTState:
@@ -228,12 +187,8 @@ class IIoTApp(AIAppProtocol):
 
         # Prepare the prompt for LLM to generate structured survey
         prompt = f"""
-        Reflect on the following interaction. 
-
-        Use the provided tools to retain any necessary memories about the customer. 
+        Update customer information based on the conversation.
         
-        Use parallel tool calling to handle updates and insertions simultaneously.
-
         IMPORTANT: Always set "json_doc_id": "Customer"
         """
 
@@ -247,80 +202,161 @@ class IIoTApp(AIAppProtocol):
         )
         updated_messages = list(merge_message_runs(messages=[SystemMessage(content=prompt)] + recent_messages[:-1]))
 
-        result = self.customer_extractor.invoke({
-            "messages": updated_messages,
-            "existing": existing,
-        })
-
         tool_msg = ToolMessage(
             content="no updates",
             tool_call_id=tool_call["id"],
         )
 
-        if len(result["responses"]) == 0:
-            return {"messages": [tool_msg]}
+        try: 
+            result = self.customer_extractor.invoke({
+                "messages": updated_messages,
+                "existing": existing,
+            })
 
-        # Store the customer in the memory
-        updated_customer = Customer.model_validate(result["responses"][0])
-        self.repo.store_customer(updated_customer)
+            if len(result["responses"]) == 0:
+                return {"messages": [tool_msg]}
 
-        tool_msg.content = "updated customer"
+            # Store the customer in the memory
+            updated_customer = Customer.model_validate(result["responses"][0])
+            self.repo.store_customer(updated_customer)
+
+            tool_msg.content = "updated customer"
+
+        except Exception as e:
+            print(f"Error in update_customer: {e}")
+            tool_msg.content = f"error: {e}"
+
         return {"messages": [tool_msg]}
 
 
     def call_survey_agent(self, state: IIoTState, config: RunnableConfig) -> IIoTState:
         ai_msg = state["messages"][-1]
         tool_call = ai_msg.tool_calls[0]
-
-        response = self.survey_agent.invoke({
-            "messages": state["messages"][:-1],
-            "supervisor_message": tool_call["args"]["supervisor_message"],
-        }, config)
-
         tool_msg = ToolMessage(
-            content=response["messages"][-1].content,
+            content="initializing survey agent",
             tool_call_id=tool_call["id"],
         )
+
+        try:
+            response = self.survey_agent.invoke({
+                "messages": state["messages"][:-1],
+                "supervisor_message": tool_call["args"]["supervisor_message"],
+            }, config)
+            tool_msg.content = response["messages"][-1].content
+
+        except Exception as e:
+            print(f"Error in call_survey_agent: {e}")
+            tool_msg.content = f"error: {e}"
+
         return {"messages": [tool_msg]}
 
 
     async def call_integration_agent(self, state: IIoTState, config: RunnableConfig) -> IIoTState:
         ai_msg = state["messages"][-1]
         tool_call = ai_msg.tool_calls[0]
-
-        response = await self.integration_agent.ainvoke({
-            "messages": state["messages"][:-1],
-            "supervisor_message": tool_call["args"]["supervisor_message"],
-        }, config)
-
         tool_msg = ToolMessage(
-            content=response["messages"][-1].content,
-            tool_call_id=state["messages"][-1].tool_calls[0]["id"],
+            content="initializing integration agent",
+            tool_call_id=tool_call["id"],
         )
+
+        try:
+            response = await self.integration_agent.ainvoke({
+                "messages": state["messages"][:-1],
+                "supervisor_message": tool_call["args"]["supervisor_message"],
+            }, config)
+            tool_msg.content = response["messages"][-1].content
+
+        except Exception as e:
+            print(f"Error in call_integration_agent: {e}")
+            tool_msg.content = f"error: {e}"
+
         return {"messages": [tool_msg]}
 
 
-    def invoke(self, content: str, session_id: str) -> str:
+    async def ainvoke(self, ctx: ChatContext, content: str) -> str:
         config = {
             "configurable": { 
-                "thread_id": session_id, 
-                "customer_id": "01JSZKQKT51WB1H7YQNSE73BGR",
+                "thread_id": ctx.session_id, 
+                "customer_id": ctx.customer_id,
+            }
+        }
+        messages = [HumanMessage(content=content)]
+        try:
+            response = await self.app.ainvoke({"messages": messages}, config)
+            return response["messages"][-1].content
+        except Exception as e:
+            print(f"Error in ainvoke: {e}")
+            return f"error: {e}"
+
+    def id(self) -> str:
+        return "iiot"
+
+    def name(self) -> str:
+        return "IIoT"
+
+    def description(self) -> str:
+        return "An AI app for managing IIoT projects, including customer updates, surveys, and integration tasks."
+    
+    def version(self) -> str:
+        return "1.0.0"
+
+    async def astream(self, ctx: ChatContext, content: str) -> AsyncIterator[MessageChunk]:
+        config = {
+            "configurable": { 
+                "thread_id": ctx.session_id, 
+                "customer_id": ctx.customer_id,
             }
         }
 
         messages = [HumanMessage(content=content)]
-        response = self.app.invoke({"messages": messages}, config)
-        return response["messages"][-1].content
 
+        current_nodes = None
+        
+        try:
+            async for event in self.app.astream({"messages": messages}, config, 
+                stream_mode=["messages"], 
+                subgraphs=True,
+            ):
+                nodes, _, message = event
+                chunk, _ = message
 
-    async def ainvoke(self, content: str, session_id: str) -> str:
-        config = {
-            "configurable": { 
-                "thread_id": session_id, 
-                "customer_id": "01JSZKQKT51WB1H7YQNSE73BGR",
-            }
-        }
+                if isinstance(chunk, AIMessageChunk):
+                    tool_calls = []
+                    for tool_call_chunk in chunk.tool_call_chunks:
+                        tool_call = ToolCall(
+                            id=tool_call_chunk.get("id"),
+                            name=tool_call_chunk.get("name"),
+                            args=tool_call_chunk.get("args"),
+                        )
+                        tool_calls.append(tool_call)
 
-        messages = [HumanMessage(content=content)]
-        response = await self.app.ainvoke({"messages": messages}, config)
-        return response["messages"][-1].content
+                    ai_chunk = MessageChunk(
+                        nodes=list(nodes),
+                        role=Role.AI,
+                        content=chunk.content,
+                        tool_calls=tool_calls,
+                        is_new=True if current_nodes != nodes else False,
+                    )
+                    yield ai_chunk
+
+                elif isinstance(chunk, ToolMessage):
+                    tool_chunk = MessageChunk(
+                        nodes=list(nodes),
+                        role=Role.TOOL,
+                        content=chunk.content,
+                        tool_call_id=chunk.tool_call_id,
+                        is_new=True if current_nodes != nodes else False,
+                    )
+                    yield tool_chunk
+
+                current_nodes = nodes
+
+        except Exception as e:
+            print(f"Error in astream: {e}")
+            error_chunk = MessageChunk(
+                nodes=list(nodes) if current_nodes else [],
+                role=Role.AI,
+                content=f"error: {e}",
+                is_complete=True,
+            )
+            yield error_chunk

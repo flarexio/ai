@@ -84,7 +84,11 @@ def create_survey_agent(
         return {"messages": [ response ]}
 
 
-    def should_continue(state: IIoTState) -> Literal["__end__", "update_survey"]:
+    def should_continue(state: IIoTState) -> Literal[
+        "__end__", 
+        "update_survey",
+        "handle_error",
+    ]:
         message = state["messages"][-1]
         if len(message.tool_calls) == 0:
             return "__end__"
@@ -93,7 +97,17 @@ def create_survey_agent(
             if tool_call["args"]["update_type"] == "survey":
                 return "update_survey"
             else:
-                raise ValueError
+                return "handle_error"
+
+
+    def handle_error(state: IIoTState) -> IIoTState:
+        ai_msg = state["messages"][-1]
+        tool_call = ai_msg.tool_calls[0]
+        tool_msg = ToolMessage(
+            content=f"error: unknown route {tool_call['args'].get('route', 'unknown')}",
+            tool_call_id=tool_call["id"],
+        )
+        return {"messages": [tool_msg]}
 
 
     def update_survey(state: IIoTState, config: RunnableConfig) -> IIoTState:
@@ -112,17 +126,13 @@ def create_survey_agent(
             "SurveyFactory": survey.model_dump() if survey else {},
         }
 
-        # Prepare the prompt for LLM to generate structured survey
-        prompt = f"""
-        Reflect on the following interaction. 
-
-        Use the provided tools to retain any necessary memories about the survey factory. 
+        # Prepare the prompt for LLM to generate structured survey - 簡化提示
+        prompt = """
+        Update survey factory information based on the conversation.
         
-        Use parallel tool calling to handle updates and insertions simultaneously.
-
         IMPORTANT:
         1. Always set "json_doc_id": "SurveyFactory"
-        2. If the user input does not specify an area or production line, assign the assets to a common area.
+        2. If the user input does not specify an area or production line, assign the machines to a common area.
         """
 
         # add short-term memory to the model
@@ -163,11 +173,13 @@ def create_survey_agent(
     # Add nodes
     workflow.add_node("model", call_model)
     workflow.add_node("update_survey", update_survey)
+    workflow.add_node("handle_error", handle_error)
 
     # Add edges
     workflow.add_edge(START, "model")
     workflow.add_conditional_edges("model", should_continue)
     workflow.add_edge("update_survey", "model")
+    workflow.add_edge("handle_error", "model")
 
     return workflow.compile(
         checkpointer,

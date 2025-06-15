@@ -1,8 +1,9 @@
 from ulid import ULID
+from typing import AsyncIterator
 
 from decorator import logging
 from persistences.db.chat import ChatRepositoryProtocol
-from protocol import AIAppProtocol, ChatContext, ChatServiceProtocol, Message, Session
+from protocol import AIAppProtocol, ChatContext, ChatServiceProtocol, Message, MessageChunk, Session, Role
 
 
 @logging
@@ -21,6 +22,9 @@ class ChatService(ChatServiceProtocol):
             raise ValueError("app not found")
         return self.apps[name]
 
+    async def list_apps(self) -> list[AIAppProtocol]:
+        return list(self.apps.values())
+
     async def create_session(self, app_name: str) -> str:
         session_id = str(ULID())
         session = Session(
@@ -38,8 +42,17 @@ class ChatService(ChatServiceProtocol):
         if not session:
             raise ValueError("session not found")
         app = self.find_app(session.app_name)
-        response = await app.ainvoke(content, session.id)
+        response = await app.ainvoke(ctx, content)
         return response
+
+    async def stream_message(self, ctx: ChatContext, content: str) -> AsyncIterator[MessageChunk]:
+        session = await self.chats.find_session(ctx.session_id)
+        if not session:
+            raise ValueError("session not found")
+        app = self.find_app(session.app_name)
+
+        async for chunk in app.astream(ctx, content):
+            yield chunk
 
     async def list_messages(self, session_id: str) -> list[Message]:
         return await self.chats.list_messages(session_id)

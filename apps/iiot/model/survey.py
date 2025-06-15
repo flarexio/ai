@@ -5,7 +5,6 @@ from typing import Any, Dict, List, Optional, Literal
 class SurveyPoint(BaseModel):
     """Represents a raw signal or control point discovered during a field survey."""
     name: str = Field(description="Field label or tag name of the point")
-    description: Optional[str] = Field(None, description="Additional explanation or observed function")
     address: Optional[str] = Field(None, description="Observed or assumed address, e.g., I0.0, 40001")
     signal_type: Optional[Literal['Digital', 'Analog']] = Field(None, description="Type of signal")
     extra_data: Dict[str, Any] = Field({}, description="Additional metadata collected during the survey")
