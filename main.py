@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import os
 import signal
 
@@ -7,8 +6,8 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres import AsyncPostgresStore
 
-from apps.basic import BasicApp
-from apps.iiot import IIoTApp
+from apps.basic import BasicAIApp
+from apps.iiot import IIoTAIApp
 from endpoint import (
     ListAppsEndpoint,
     CreateSessionEndpoint,
@@ -52,6 +51,14 @@ async def main():
                             "--creds", "/home/ar0660/.flarex/iiot/user.creds",
                         ],
                         "transport": "stdio",
+                    },
+                    "time": {
+                        "command": "uvx",
+                        "args": [
+                            "mcp-server-time",
+                            "--local-timezone=Asia/Taipei",
+                        ],
+                        "transport": "stdio",
                     }
                 },
             ) as mcp_client,
@@ -67,13 +74,14 @@ async def main():
             # Create the chat service
             svc = ChatService(chats)
 
+            toolkit = mcp_client.server_name_to_tools
+
             # Add AI apps
-            svc.add_app("basic", BasicApp(memory, store))
+            svc.add_app("basic", BasicAIApp(memory, store, toolkit))
 
             # IIoT app
             iiot_repo = IIoTMongoDBRepository(MONGO_URI)
-            iiot_tools = mcp_client.server_name_to_tools["iiot"]
-            svc.add_app("iiot", IIoTApp(memory, iiot_repo, iiot_tools))
+            svc.add_app("iiot", IIoTAIApp(memory, iiot_repo, toolkit))
 
             # Setup endpoints
             endpoints: dict[str, EndpointProtocol] = {

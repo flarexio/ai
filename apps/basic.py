@@ -3,8 +3,9 @@ from pydantic import BaseModel
 import uuid
 
 from langchain.chat_models.base import BaseChatModel, init_chat_model
-from langchain_core.messages import HumanMessage, ToolMessage, SystemMessage, merge_message_runs, trim_messages
+from langchain_core.messages import ToolMessage, SystemMessage, merge_message_runs, trim_messages
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import CONF, CONFIG_KEY_STORE
 from langgraph.graph import MessagesState, StateGraph, START
@@ -15,7 +16,7 @@ from langgraph_supervisor import create_supervisor
 from langmem import create_manage_memory_tool, create_search_memory_tool
 from trustcall import create_extractor
 
-from protocol import AIAppProtocol, ChatContext
+from .base import BaseAIApp
 
 
 class Triple(BaseModel): 
@@ -26,7 +27,7 @@ class Triple(BaseModel):
     context: str | None = None
 
 def create_semantic_memory_manager(llm: BaseChatModel, memory: BaseCheckpointSaver, store: BaseStore) -> CompiledGraph:
-    def prompt(state: MessagesState, config: RunnableConfig):
+    async def prompt(state: MessagesState, config: RunnableConfig):
         """Prepare messages with context from existing memories."""
         conf = config.get(CONF)
         store: BaseStore = conf.get(CONFIG_KEY_STORE)
@@ -34,7 +35,7 @@ def create_semantic_memory_manager(llm: BaseChatModel, memory: BaseCheckpointSav
 
         memories = None
         if user_id:
-            memories = store.search(
+            memories = await store.asearch(
                 ("users", user_id, "triples"),
                 query=state["messages"][-1].content,
             )
@@ -81,12 +82,12 @@ def create_user_profile_manager(llm: BaseChatModel, memory: BaseCheckpointSaver,
         update_type: Literal["user"]
 
 
-    def call_model(state: MessagesState, config: RunnableConfig):
+    async def call_model(state: MessagesState, config: RunnableConfig):
         conf = config.get(CONF)
         store: BaseStore = conf.get(CONFIG_KEY_STORE)
         user_id: str = conf.get("user_id")
 
-        results = store.search(
+        results = await store.asearch(
             ("users", user_id, "profile")
         )
 
@@ -151,12 +152,12 @@ def create_user_profile_manager(llm: BaseChatModel, memory: BaseCheckpointSaver,
         tool_choice="UserProfile",
     )
 
-    def update_user(state: MessagesState, config: RunnableConfig) -> MessagesState:
+    async def update_user(state: MessagesState, config: RunnableConfig) -> MessagesState:
         conf = config.get(CONF)
         store: BaseStore = conf.get(CONFIG_KEY_STORE)
         user_id: str = conf.get("user_id")
 
-        results = store.search(
+        results = await store.asearch(
             ("users", user_id, "profile")
         )
 
@@ -223,9 +224,11 @@ def create_user_profile_manager(llm: BaseChatModel, memory: BaseCheckpointSaver,
         name="user_profile_manager"
     )
 
-class BasicApp(AIAppProtocol):
-    def __init__(self, memory: BaseCheckpointSaver, store: BaseStore):
+class BasicAIApp(BaseAIApp):
+    def __init__(self, memory: BaseCheckpointSaver, store: BaseStore, toolkit: dict[str, list[BaseTool]]):
         llm = init_chat_model("openai:gpt-4o-mini")
+
+        tools = toolkit["time"]
 
         # Create a semantic memory manager
         semantic_memory_manager = create_semantic_memory_manager(llm, memory, store)
@@ -255,6 +258,7 @@ class BasicApp(AIAppProtocol):
                 user_profile_manager,
             ],
             model=llm,
+            tools=tools,
             prompt=system_prompt,
         ).compile(checkpointer=memory, store=store)
 
@@ -269,16 +273,3 @@ class BasicApp(AIAppProtocol):
 
     def version(self) -> str:
         return "1.0.0"
-
-    async def ainvoke(self, ctx: ChatContext, content: str) -> str:
-        config = {
-            "configurable": { 
-                "thread_id": ctx.session_id,
-                "user_id": ctx.user_id,
-            } 
-        }
-
-        messages = [HumanMessage(content=content)]
-        response = await self.app.ainvoke({"messages": messages}, config)
-        return response["messages"][-1].content
-

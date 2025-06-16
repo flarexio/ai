@@ -1,7 +1,6 @@
 from enum import Enum
 from typing import AsyncIterator, Optional, Protocol, Union
 from pydantic import BaseModel, Field
-import asyncio
 
 
 class Role(str, Enum):
@@ -124,7 +123,20 @@ class AIAppProtocol(Protocol):
 
     async def ainvoke(self, ctx: ChatContext, content: str) -> str:
         """Asynchronously invoke the app."""
-        ...
+        config = {
+            "configurable": { 
+                "thread_id": ctx.session_id, 
+                "user_id": ctx.user_id,
+                "customer_id": ctx.customer_id,
+            }
+        }
+        messages = [HumanMessage(content=content)]
+        try:
+            response = await self.app.ainvoke({"messages": messages}, config)
+            return response["messages"][-1].content
+        except Exception as e:
+            print(f"Error in ainvoke: {e}")
+            return f"error: {e}"
 
     async def astream(self, ctx: ChatContext, content: str) -> AsyncIterator[MessageChunk]:
         """Asynchronously stream the app's response."""

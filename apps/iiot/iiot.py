@@ -1,7 +1,7 @@
 from pydantic import Field
-from typing import AsyncIterator, Literal, TypedDict
+from typing import Literal, TypedDict
 
-from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage, ToolMessage, merge_message_runs, trim_messages
+from langchain_core.messages import SystemMessage, ToolMessage, merge_message_runs, trim_messages
 from langchain_core.tools import BaseTool
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
@@ -10,8 +10,7 @@ from langgraph.constants import CONF
 from langgraph.graph import StateGraph, START
 from trustcall import create_extractor
 
-from protocol import AIAppProtocol, ChatContext, MessageChunk, Role, ToolCall
-
+from ..base import BaseAIApp
 from .model import Customer, IIoTRepositoryProtocol, IIoTState
 from .survey import create_survey_agent
 from .integration import create_integration_agent
@@ -62,10 +61,12 @@ You are the **Supervisor** in an AI-powered IIoT project system.
 Call agents sequentially as needed, then respond naturally to user.
 """
 
-class IIoTApp(AIAppProtocol):
-    def __init__(self, memory: BaseCheckpointSaver, repo: IIoTRepositoryProtocol, tools: list[BaseTool]):
+class IIoTAIApp(BaseAIApp):
+    def __init__(self, memory: BaseCheckpointSaver, repo: IIoTRepositoryProtocol, toolkit: dict[str, list[BaseTool]]):
         # Setup the LLM
         model = ChatOpenAI(model="gpt-4.1-mini")
+
+        tools = toolkit["iiot"]
 
         # Create the agents
         customer_extractor = create_extractor(model, tools=[Customer], tool_choice="Customer")
@@ -103,7 +104,6 @@ class IIoTApp(AIAppProtocol):
         self.integration_agent = integration_agent
         self.model = model
         self.repo = repo
-
 
     def call_supervisor(self, state: IIoTState, config: RunnableConfig) -> IIoTState:
         conf = config.get(CONF)
@@ -272,22 +272,6 @@ class IIoTApp(AIAppProtocol):
 
         return {"messages": [tool_msg]}
 
-
-    async def ainvoke(self, ctx: ChatContext, content: str) -> str:
-        config = {
-            "configurable": { 
-                "thread_id": ctx.session_id, 
-                "customer_id": ctx.customer_id,
-            }
-        }
-        messages = [HumanMessage(content=content)]
-        try:
-            response = await self.app.ainvoke({"messages": messages}, config)
-            return response["messages"][-1].content
-        except Exception as e:
-            print(f"Error in ainvoke: {e}")
-            return f"error: {e}"
-
     def id(self) -> str:
         return "iiot"
 
@@ -299,64 +283,3 @@ class IIoTApp(AIAppProtocol):
     
     def version(self) -> str:
         return "1.0.0"
-
-    async def astream(self, ctx: ChatContext, content: str) -> AsyncIterator[MessageChunk]:
-        config = {
-            "configurable": { 
-                "thread_id": ctx.session_id, 
-                "customer_id": ctx.customer_id,
-            }
-        }
-
-        messages = [HumanMessage(content=content)]
-
-        current_nodes = None
-        
-        try:
-            async for event in self.app.astream({"messages": messages}, config, 
-                stream_mode=["messages"], 
-                subgraphs=True,
-            ):
-                nodes, _, message = event
-                chunk, _ = message
-
-                if isinstance(chunk, AIMessageChunk):
-                    tool_calls = []
-                    for tool_call_chunk in chunk.tool_call_chunks:
-                        tool_call = ToolCall(
-                            id=tool_call_chunk.get("id"),
-                            name=tool_call_chunk.get("name"),
-                            args=tool_call_chunk.get("args"),
-                        )
-                        tool_calls.append(tool_call)
-
-                    ai_chunk = MessageChunk(
-                        nodes=list(nodes),
-                        role=Role.AI,
-                        content=chunk.content,
-                        tool_calls=tool_calls,
-                        is_new=True if current_nodes != nodes else False,
-                    )
-                    yield ai_chunk
-
-                elif isinstance(chunk, ToolMessage):
-                    tool_chunk = MessageChunk(
-                        nodes=list(nodes),
-                        role=Role.TOOL,
-                        content=chunk.content,
-                        tool_call_id=chunk.tool_call_id,
-                        is_new=True if current_nodes != nodes else False,
-                    )
-                    yield tool_chunk
-
-                current_nodes = nodes
-
-        except Exception as e:
-            print(f"Error in astream: {e}")
-            error_chunk = MessageChunk(
-                nodes=list(nodes) if current_nodes else [],
-                role=Role.AI,
-                content=f"error: {e}",
-                is_complete=True,
-            )
-            yield error_chunk
