@@ -17,13 +17,13 @@ class ChatService(ChatServiceProtocol):
     def add_app(self, name: str, app: AIAppProtocol):
         self.apps[name] = app
 
-    def find_app(self, name: str) -> AIAppProtocol:
+    async def list_apps(self) -> list[AIAppProtocol]:
+        return list(self.apps.values())
+
+    async def find_app(self, name: str) -> AIAppProtocol:
         if name not in self.apps:
             raise ValueError("app not found")
         return self.apps[name]
-
-    async def list_apps(self) -> list[AIAppProtocol]:
-        return list(self.apps.values())
 
     async def create_session(self, app_name: str) -> str:
         session_id = str(ULID())
@@ -41,7 +41,7 @@ class ChatService(ChatServiceProtocol):
         session = await self.chats.find_session(ctx.session_id)
         if not session:
             raise ValueError("session not found")
-        app = self.find_app(session.app_name)
+        app = await self.find_app(session.app_name)
         response = await app.ainvoke(ctx, content)
         return response
 
@@ -49,7 +49,7 @@ class ChatService(ChatServiceProtocol):
         session = await self.chats.find_session(ctx.session_id)
         if not session:
             raise ValueError("session not found")
-        app = self.find_app(session.app_name)
+        app = await self.find_app(session.app_name)
 
         async for chunk in app.astream(ctx, content):
             yield chunk

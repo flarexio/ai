@@ -7,9 +7,11 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres import AsyncPostgresStore
 
 from apps.basic import BasicAIApp
+from apps.code import CodeAIApp
 from apps.iiot import IIoTAIApp
 from endpoint import (
     ListAppsEndpoint,
+    FindAppEndpoint,
     CreateSessionEndpoint,
     ListSessionsEndpoint,
     SendMessageEndpoint,
@@ -45,19 +47,66 @@ async def main():
             }) as store,
             MultiServerMCPClient(
                 {
-                    "iiot": {
-                        "command": "iiot_mcp",
+                    # "iiot": {
+                    #     "command": "iiot_mcp",
+                    #     "args": [
+                    #         "--creds", "/home/ar0660/.flarex/iiot/user.creds",
+                    #     ],
+                    #     "transport": "stdio",
+                    # },
+                    "mcpblade": {
+                        "command": "mcpblade_mcp_server",
                         "args": [
-                            "--creds", "/home/ar0660/.flarex/iiot/user.creds",
+                            "--edge-id", "01JXCHPCT4S10YKVPG4XGRDGCX",
                         ],
+                        "env": {
+                            "NATS_CREDS": "/home/ar0660/.flarex/ai/user.creds",
+                        },
                         "transport": "stdio",
                     },
-                    "time": {
-                        "command": "uvx",
+                    # "excel": {
+                    #     "command": "uvx",
+                    #     "args": [
+                    #         "excel-mcp-server",
+                    #         "stdio",
+                    #     ],
+                    #     "transport": "stdio",
+                    # }
+                    # "filesystem": {
+                    #     "command": "mcpblade_mcp_server",
+                    #     "args": [
+                    #         "--edge-id", "01JXCHPCT4S10YKVPG4XGRDGCX",
+                    #         "--server-id", "filesystem",
+                    #         "--cmd", "npx -y @modelcontextprotocol/server-filesystem /home/ar0660/joke/"
+                    #     ],
+                    #     "env": {
+                    #         "NATS_CREDS": "/home/ar0660/.flarex/iiot/user.creds",
+                    #     },
+                    #     "transport": "stdio",
+                    # }
+                    # "forge": {
+                    #     "command": "forge_mcp",
+                    #     "args": [],
+                    #     "transport": "stdio",
+                    # },
+                    # "filesystem": {
+                    #     "command": "npx",
+                    #     "args": [
+                    #         "-y", "@modelcontextprotocol/server-filesystem", 
+                    #         "/home/ar0660/.flarex/forge/workspaces",
+                    #     ],
+                    #     "transport": "stdio",
+                    # },
+                    "filesystem": {
+                        "command": "mcpblade_mcp_server",
                         "args": [
-                            "mcp-server-time",
-                            "--local-timezone=Asia/Taipei",
+                            "--edge-id", "01JXCHPCT4S10YKVPG4XGRDGCX",
+                            "--server-id", "filesystem",
+                            "--cmd", "npx -y @modelcontextprotocol/server-filesystem /home/ar0660/.flarex/forge/workspaces"
                         ],
+                        "env": {
+                            "NATS_CREDS": "/home/ar0660/.flarex/ai/user.creds"
+                        },
                         "transport": "stdio",
                     }
                 },
@@ -78,14 +127,15 @@ async def main():
 
             # Add AI apps
             svc.add_app("basic", BasicAIApp(memory, store, toolkit))
+            svc.add_app("code", CodeAIApp(memory, store, toolkit))
 
-            # IIoT app
             iiot_repo = IIoTMongoDBRepository(MONGO_URI)
             svc.add_app("iiot", IIoTAIApp(memory, iiot_repo, toolkit))
 
             # Setup endpoints
             endpoints: dict[str, EndpointProtocol] = {
                 "list_apps": ListAppsEndpoint(svc),
+                "find_app": FindAppEndpoint(svc),
                 "create_session": CreateSessionEndpoint(svc),
                 "list_sessions": ListSessionsEndpoint(svc),
                 "send_message": SendMessageEndpoint(svc),

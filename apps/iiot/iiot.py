@@ -66,7 +66,8 @@ class IIoTAIApp(BaseAIApp):
         # Setup the LLM
         model = ChatOpenAI(model="gpt-4.1-mini")
 
-        tools = toolkit["iiot"]
+        # tools = toolkit["iiot"]
+        tools = []
 
         # Create the agents
         customer_extractor = create_extractor(model, tools=[Customer], tool_choice="Customer")

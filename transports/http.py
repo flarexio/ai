@@ -15,7 +15,7 @@ from endpoint import (
     StreamMessageRequest,
 )
 from kit import EndpointProtocol
-from protocol import MessageChunk
+from protocol import AppInfo, MessageChunk
 
 
 # 可允許的前端來源清單
@@ -50,6 +50,10 @@ class HTTPTransport:
         async def list_apps() -> ListAppsResponse:
             return await self._list_apps_handler()
 
+        @app.get("/apps/{app_id}")
+        async def find_app(app_id: str) -> AppInfo:
+            return await self._find_app_handler(app_id)
+
         @app.post("/sessions", tags=["sessions"])
         async def create_session(request: CreateSessionRequest) -> str:
             return await self._create_session_handler(request)
@@ -82,6 +86,13 @@ class HTTPTransport:
 
         endpoint = self.endpoints["list_apps"]
         return await endpoint.handle()
+
+    async def _find_app_handler(self, app_id: str) -> AppInfo:
+        if "find_app" not in self.endpoints:
+            raise HTTPException(status_code=404, detail="endpoint not found")
+
+        endpoint = self.endpoints["find_app"]
+        return await endpoint.handle(app_id)
 
     async def _create_session_handler(self, req: CreateSessionRequest) -> str:
         if "create_session" not in self.endpoints:

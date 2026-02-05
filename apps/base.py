@@ -47,6 +47,7 @@ class BaseAIApp(AIAppProtocol):
                 "thread_id": ctx.session_id, 
                 "user_id": ctx.user_id,
                 "customer_id": ctx.customer_id,
+                "workspace_id": ctx.workspace_id,
             }
         }
         messages = [HumanMessage(content=content)]
@@ -64,6 +65,7 @@ class BaseAIApp(AIAppProtocol):
                 "thread_id": ctx.session_id, 
                 "user_id": ctx.user_id,
                 "customer_id": ctx.customer_id,
+                "workspace_id": ctx.workspace_id,
             }
         }
 

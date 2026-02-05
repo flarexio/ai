@@ -86,6 +86,9 @@ class ChatContext(BaseModel):
     customer_id: Optional[str] = Field(None,
         description="The customer ID for the chat context",
     )
+    workspace_id: Optional[str] = Field(None, 
+        description="The workspace ID for the chat context",
+    )
 
 class AppInfo(BaseModel):
     """Information about an AI app."""
@@ -128,6 +131,7 @@ class AIAppProtocol(Protocol):
                 "thread_id": ctx.session_id, 
                 "user_id": ctx.user_id,
                 "customer_id": ctx.customer_id,
+                "workspace_id": ctx.workspace_id,
             }
         }
         messages = [HumanMessage(content=content)]
@@ -155,13 +159,13 @@ class ChatServiceProtocol(Protocol):
         """Add an app to the chat service."""
         ...
 
-    def find_app(self, name: str) -> AIAppProtocol:
-        """Find an app by name."""
-        ... 
-
     async def list_apps(self) -> list[AIAppProtocol]:
         """List all apps in the chat service."""
         ...
+
+    async def find_app(self, name: str) -> AIAppProtocol:
+        """Find an app by name."""
+        ... 
 
     async def create_session(self, app_name: str) -> str:
         """ Create a new chat session."""

@@ -19,6 +19,11 @@ class ListAppsEndpoint(Endpoint[ChatServiceProtocol, None, ListAppsResponse]):
 
         return ListAppsResponse(apps=infos)
 
+class FindAppEndpoint(Endpoint[ChatServiceProtocol, str, AppInfo]):
+    async def handle(self, request: str) -> AppInfo:
+        app = await self.service.find_app(request)
+        return app.info()
+
 class CreateSessionRequest(BaseModel):
     app_name: str = Field(
         description="The name of the app to create a session for",

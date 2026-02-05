@@ -14,15 +14,15 @@ def logging(cls: Type[ChatServiceProtocol]) -> Type[ChatServiceProtocol]:
             self.next.add_app(name, app)
             print(f"app added | app={name}")
 
-        def find_app(self, name: str) -> AIAppProtocol:
-            app = self.next.find_app(name)
-            print(f"app found | app={name}")
-            return app
-
         async def list_apps(self) -> list[str]:
             apps = await self.next.list_apps()
             print(f"apps listed | count={len(apps)}")
             return apps
+
+        async def find_app(self, name: str) -> AIAppProtocol:
+            app = await self.next.find_app(name)
+            print(f"app found | app={name}")
+            return app
 
         async def create_session(self, app_name: str) -> str:
             session_id = await self.next.create_session(app_name)

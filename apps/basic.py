@@ -201,7 +201,7 @@ def create_user_profile_manager(llm: BaseChatModel, memory: BaseCheckpointSaver,
         if len(result["responses"]) == 0:
             return {"messages": [tool_msg]}
 
-        store.put(
+        await store.aput(
             ("users", user_id, "profile"),
             key=id,
             value=result["responses"][0].model_dump(),
@@ -228,7 +228,7 @@ class BasicAIApp(BaseAIApp):
     def __init__(self, memory: BaseCheckpointSaver, store: BaseStore, toolkit: dict[str, list[BaseTool]]):
         llm = init_chat_model("openai:gpt-4o-mini")
 
-        tools = toolkit["time"]
+        tools = toolkit["mcpblade"]
 
         # Create a semantic memory manager
         semantic_memory_manager = create_semantic_memory_manager(llm, memory, store)

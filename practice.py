@@ -16,6 +16,28 @@ async def main():
                     "--creds", "/home/ar0660/.flarex/edge/user.creds",
                 ],
                 "transport": "stdio",
+            },
+            "mcpblade": {
+                "command": "mcpblade_mcp_server",
+                "args": [
+                    "--edge-id", "01JXCHPCT4S10YKVPG4XGRDGCX",
+                ],
+                "env": {
+                    "NATS_CREDS": "/home/ar0660/.flarex/iiot/user.creds",
+                },
+                "transport": "stdio",
+            },
+            "filesystem": {
+                "command": "mcpblade_mcp_server",
+                "args": [
+                    "--edge-id", "01JXCHPCT4S10YKVPG4XGRDGCX",
+                    "--server-id", "filesystem",
+                    "--cmd", "npmx -y @modelcontextprotocol/server-filesystem /home/ar0660/joke/"
+                ],
+                "env": {
+                    "NATS_CREDS": "/home/ar0660/.flarex/iiot/user.creds",
+                },
+                "transport": "stdio",
             }
         },
     ) as client:
