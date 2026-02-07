@@ -1,15 +1,17 @@
-from typing import Optional
+from typing import Any, Optional
 
-from langchain.chat_models.base import BaseChatModel
-from langchain_core.messages import AnyMessage, SystemMessage, trim_messages
-from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool
-from langgraph.constants import CONF
-from langgraph.graph.graph import CompiledGraph
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
+from langchain.agents.middleware import before_model
+from langchain.chat_models import BaseChatModel
+from langchain.messages import trim_messages, RemoveMessage, SystemMessage
+from langchain.tools import BaseTool
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
+from protocol import ChatContext
 from ..model import IIoTRepositoryProtocol, IIoTState
 
 
@@ -58,18 +60,18 @@ def create_connectivity_agent(
     checkpointer: Optional[Checkpointer] = None,
     store: Optional[BaseStore] = None,
     name: str = "connectivity_agent",
-) -> CompiledGraph:
+) -> CompiledStateGraph:
 
-    def prompt(state: IIoTState, config: RunnableConfig) -> list[AnyMessage]:
-        conf = config.get(CONF)
-        customer_id = conf.get("customer_id")
+    @before_model
+    def prompt(state: IIoTState, runtime: Runtime[ChatContext]) -> dict[str | Any] | None:
+        ctx = runtime.context
 
-        customer = repo.find_customer(customer_id)
+        customer = repo.find_customer(ctx.customer_id)
         existing_customer = None
         if customer:
             existing_customer = customer.model_dump()
 
-        factories = repo.list_factories(customer_id)
+        factories = repo.list_factories(ctx.customer_id)
         existing_factory = None
         if len(factories) > 0:
             existing_factory = factories[0].model_dump()
@@ -90,13 +92,20 @@ def create_connectivity_agent(
             start_on="human",
         )
 
-        return [SystemMessage(content=system_prompt)] + recent_messages
+        return {
+            "messages": [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                SystemMessage(content=system_prompt),
+                *recent_messages,
+            ]
+        }
 
-    return create_react_agent(
+    return create_agent(
         model,
         tools,
-        prompt=prompt,
+        middleware=[prompt],
         state_schema=IIoTState,
+        context_schema=ChatContext,
         checkpointer=checkpointer,
         store=store,
         name=name,

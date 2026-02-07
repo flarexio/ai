@@ -1,16 +1,19 @@
-from typing import Annotated, Optional
+from typing import Any, Optional
 
-from langchain.chat_models.base import BaseChatModel
-from langchain_core.messages import AnyMessage, SystemMessage, merge_message_runs, trim_messages
-from langchain_core.tools import BaseTool
-from langchain_core.runnables import RunnableConfig
-from langgraph.constants import CONF
-from langgraph.graph.graph import CompiledGraph
-from langgraph.prebuilt import InjectedState, create_react_agent
+from langchain_core.messages import merge_message_runs
+from langchain.agents import create_agent
+from langchain.agents.middleware import before_model 
+from langchain.chat_models import BaseChatModel
+from langchain.messages import trim_messages, RemoveMessage, SystemMessage
+from langchain.tools import tool, BaseTool, ToolRuntime
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from trustcall import create_extractor
 
+from protocol import ChatContext
 from ..model import Factory, IIoTRepositoryProtocol, IIoTState
 
 
@@ -54,26 +57,26 @@ def create_mapping_agent(
     checkpointer: Optional[Checkpointer] = None,
     store: Optional[BaseStore] = None,
     name: str = "mapping_agent",
-) -> CompiledGraph:
+) -> CompiledStateGraph:
 
     # Create the extractor
     extractor = create_extractor(model, tools=[Factory], tool_choice="Factory")
 
-    def prompt(state: IIoTState, config: RunnableConfig) -> list[AnyMessage]:
-        conf = config.get(CONF)
-        customer_id = conf.get("customer_id")
+    @before_model
+    def prompt(state: IIoTState, runtime: Runtime[ChatContext]) -> dict[str | Any] | None:
+        ctx = runtime.context
 
-        customer = repo.find_customer(customer_id)
+        customer = repo.find_customer(ctx.customer_id)
         existing_customer = None
         if customer:
             existing_customer = customer.model_dump()
 
-        surveys = repo.list_surveys(customer_id)
+        surveys = repo.list_surveys(ctx.customer_id)
         existing_survey = None
         if len(surveys) > 0:
             existing_survey = surveys[0].model_dump()
 
-        factories = repo.list_factories(customer_id)
+        factories = repo.list_factories(ctx.customer_id)
         existing_factory = None
         if len(factories) > 0:
             existing_factory = factories[0].model_dump()
@@ -95,25 +98,25 @@ def create_mapping_agent(
             start_on="human",
         )
 
-        return [SystemMessage(content=system_prompt)] + recent_messages
+        return {
+            "messages": [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                SystemMessage(content=system_prompt),
+                *recent_messages,
+            ]
+        }
 
 
-    def update_factory(
-        *, 
-        state: Annotated[IIoTState, InjectedState], 
-        config: RunnableConfig,
-    ) -> str:
-        """Update the factory model based on the Agent's instructions and driver configuration."""
+    @tool("update_factory", description="Update the factory model based on the Agent's instructions and driver configuration.")
+    def update_factory(runtime: ToolRuntime[ChatContext]) -> str:
+        ctx = runtime.context
 
-        conf = config.get(CONF)
-        customer_id = conf.get("customer_id")
-
-        surveys = repo.list_surveys(customer_id)
+        surveys = repo.list_surveys(ctx.customer_id)
         existing_survey = None
         if len(surveys) > 0:
             existing_survey = surveys[0].model_dump()
 
-        factories = repo.list_factories(customer_id)
+        factories = repo.list_factories(ctx.customer_id)
         factory = factories[0] if len(factories) > 0 else None
         existing = {
             "Factory": factory.model_dump() if factory else None,
@@ -121,7 +124,7 @@ def create_mapping_agent(
 
         # 從對話中獲取最新的指令和配置資訊
         recent_messages = trim_messages(
-            state["messages"], 
+            runtime.state["messages"], 
             max_tokens=10,
             token_counter=len,
             start_on="human",
@@ -165,11 +168,12 @@ def create_mapping_agent(
         return "Factory updated successfully."
 
 
-    return create_react_agent(
+    return create_agent(
         model,
         [update_factory] + tools,
-        prompt=prompt,
+        middleware=[prompt],
         state_schema=IIoTState,
+        context_schema=ChatContext,
         checkpointer=checkpointer,
         store=store,
         name=name,

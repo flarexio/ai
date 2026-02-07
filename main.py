@@ -2,9 +2,10 @@ import asyncio
 import os
 import signal
 
-from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.tools import load_mcp_tools
+from langchain.tools import BaseTool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from langgraph.store.postgres import AsyncPostgresStore
+from langgraph.store.postgres.aio import AsyncPostgresStore
 
 from apps.basic import BasicAIApp
 from apps.code import CodeAIApp
@@ -36,6 +37,70 @@ MONGO_URL = os.getenv("MONGO_HOST") + ":" + os.getenv("MONGO_PORT")
 MONGO_AUTH = os.getenv("MONGO_USERNAME") + ":" + os.getenv("MONGO_PASSWORD")
 MONGO_URI = f"mongodb://{MONGO_AUTH}@{MONGO_URL}"
 
+MCP_SERVERS = {
+    # "iiot": {
+    #     "command": "iiot_mcp",
+    #     "args": [
+    #         "--creds", "/home/ar0660/.flarex/iiot/user.creds",
+    #     ],
+    #     "transport": "stdio",
+    # },
+    "mcpblade": {
+        "command": "mcpblade_mcp_server",
+        "args": [
+            "--edge-id", "01JXCHPCT4S10YKVPG4XGRDGCX",
+        ],
+        "env": {
+            "NATS_CREDS": "/home/ar0660/.flarex/ai/user.creds",
+        },
+        "transport": "stdio",
+    },
+    # "excel": {
+    #     "command": "uvx",
+    #     "args": [
+    #         "excel-mcp-server",
+    #         "stdio",
+    #     ],
+    #     "transport": "stdio",
+    # }
+    # "filesystem": {
+    #     "command": "mcpblade_mcp_server",
+    #     "args": [
+    #         "--edge-id", "01JXCHPCT4S10YKVPG4XGRDGCX",
+    #         "--server-id", "filesystem",
+    #         "--cmd", "npx -y @modelcontextprotocol/server-filesystem /home/ar0660/joke/"
+    #     ],
+    #     "env": {
+    #         "NATS_CREDS": "/home/ar0660/.flarex/iiot/user.creds",
+    #     },
+    #     "transport": "stdio",
+    # }
+    # "forge": {
+    #     "command": "forge_mcp",
+    #     "args": [],
+    #     "transport": "stdio",
+    # },
+    # "filesystem": {
+    #     "command": "npx",
+    #     "args": [
+    #         "-y", "@modelcontextprotocol/server-filesystem", 
+    #         "/home/ar0660/.flarex/forge/workspaces",
+    #     ],
+    #     "transport": "stdio",
+    # },
+    "filesystem": {
+        "command": "mcpblade_mcp_server",
+        "args": [
+            "--edge-id", "01JXCHPCT4S10YKVPG4XGRDGCX",
+            "--server-id", "filesystem",
+            "--cmd", "npx -y @modelcontextprotocol/server-filesystem /home/ar0660/.flarex/forge/workspaces"
+        ], 
+        "env": {
+            "NATS_CREDS": "/home/ar0660/.flarex/ai/user.creds"
+        },
+        "transport": "stdio",
+    }
+}
 
 async def main():
     try:
@@ -45,72 +110,6 @@ async def main():
                 "dims": 1536,
                 "embed": "openai:text-embedding-3-small",
             }) as store,
-            MultiServerMCPClient(
-                {
-                    # "iiot": {
-                    #     "command": "iiot_mcp",
-                    #     "args": [
-                    #         "--creds", "/home/ar0660/.flarex/iiot/user.creds",
-                    #     ],
-                    #     "transport": "stdio",
-                    # },
-                    "mcpblade": {
-                        "command": "mcpblade_mcp_server",
-                        "args": [
-                            "--edge-id", "01JXCHPCT4S10YKVPG4XGRDGCX",
-                        ],
-                        "env": {
-                            "NATS_CREDS": "/home/ar0660/.flarex/ai/user.creds",
-                        },
-                        "transport": "stdio",
-                    },
-                    # "excel": {
-                    #     "command": "uvx",
-                    #     "args": [
-                    #         "excel-mcp-server",
-                    #         "stdio",
-                    #     ],
-                    #     "transport": "stdio",
-                    # }
-                    # "filesystem": {
-                    #     "command": "mcpblade_mcp_server",
-                    #     "args": [
-                    #         "--edge-id", "01JXCHPCT4S10YKVPG4XGRDGCX",
-                    #         "--server-id", "filesystem",
-                    #         "--cmd", "npx -y @modelcontextprotocol/server-filesystem /home/ar0660/joke/"
-                    #     ],
-                    #     "env": {
-                    #         "NATS_CREDS": "/home/ar0660/.flarex/iiot/user.creds",
-                    #     },
-                    #     "transport": "stdio",
-                    # }
-                    # "forge": {
-                    #     "command": "forge_mcp",
-                    #     "args": [],
-                    #     "transport": "stdio",
-                    # },
-                    # "filesystem": {
-                    #     "command": "npx",
-                    #     "args": [
-                    #         "-y", "@modelcontextprotocol/server-filesystem", 
-                    #         "/home/ar0660/.flarex/forge/workspaces",
-                    #     ],
-                    #     "transport": "stdio",
-                    # },
-                    "filesystem": {
-                        "command": "mcpblade_mcp_server",
-                        "args": [
-                            "--edge-id", "01JXCHPCT4S10YKVPG4XGRDGCX",
-                            "--server-id", "filesystem",
-                            "--cmd", "npx -y @modelcontextprotocol/server-filesystem /home/ar0660/.flarex/forge/workspaces"
-                        ],
-                        "env": {
-                            "NATS_CREDS": "/home/ar0660/.flarex/ai/user.creds"
-                        },
-                        "transport": "stdio",
-                    }
-                },
-            ) as mcp_client,
         ):
             # Create the chat service
             await memory.setup()
@@ -123,7 +122,11 @@ async def main():
             # Create the chat service
             svc = ChatService(chats)
 
-            toolkit = mcp_client.server_name_to_tools
+            toolkit: dict[str, list[BaseTool]] = {}
+            for name, connection in MCP_SERVERS.items():
+                toolkit[name] = await load_mcp_tools(None, 
+                    connection=connection,
+                )
 
             # Add AI apps
             svc.add_app("basic", BasicAIApp(memory, store, toolkit))

@@ -1,7 +1,7 @@
-from langchain.chat_models.base import init_chat_model
-from langchain_core.tools import BaseTool
+from langchain.agents import create_agent
+from langchain.chat_models import init_chat_model
+from langchain.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.prebuilt import create_react_agent
 from langgraph.store.base import BaseStore
 
 from .base import BaseAIApp
@@ -19,15 +19,15 @@ SYSTEM_PROMPT = """
 
 class StocktakingApp(BaseAIApp):
     def __init__(self, memory: BaseCheckpointSaver, store: BaseStore, toolkit: dict[str, list[BaseTool]]):
-        llm = init_chat_model("openai:gpt-4o-mini")
+        llm = init_chat_model("openai:gpt-5-mini")
 
         tools = toolkit["excel"]
 
-        self.app = create_react_agent(
-            model=llm,
-            tools=tools,
-            prompt=SYSTEM_PROMPT,
-        ).compile(checkpointer=memory, store=store)
+        self.app = create_agent(llm, tools,
+            system_prompt=SYSTEM_PROMPT,
+            checkpointer=memory,
+            store=store,
+        )
 
     def id(self) -> str:
         return "stocktaking"

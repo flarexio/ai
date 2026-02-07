@@ -1,15 +1,16 @@
 from pydantic import Field
 from typing import Literal, TypedDict
 
-from langchain_core.messages import SystemMessage, ToolMessage, merge_message_runs, trim_messages
-from langchain_core.tools import BaseTool
-from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
+from langchain_core.messages import merge_message_runs
+from langchain.chat_models import init_chat_model
+from langchain.messages import trim_messages, SystemMessage, ToolMessage
+from langchain.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.constants import CONF
 from langgraph.graph import StateGraph, START
+from langgraph.runtime import Runtime
 from trustcall import create_extractor
 
+from protocol import ChatContext
 from ..base import BaseAIApp
 from .model import Customer, IIoTRepositoryProtocol, IIoTState
 from .survey import create_survey_agent
@@ -64,10 +65,9 @@ Call agents sequentially as needed, then respond naturally to user.
 class IIoTAIApp(BaseAIApp):
     def __init__(self, memory: BaseCheckpointSaver, repo: IIoTRepositoryProtocol, toolkit: dict[str, list[BaseTool]]):
         # Setup the LLM
-        model = ChatOpenAI(model="gpt-4.1-mini")
+        model = init_chat_model("openai:gpt-5-mini")
 
-        # tools = toolkit["iiot"]
-        tools = []
+        tools = toolkit["iiot"]
 
         # Create the agents
         customer_extractor = create_extractor(model, tools=[Customer], tool_choice="Customer")
@@ -76,7 +76,7 @@ class IIoTAIApp(BaseAIApp):
         integration_agent = create_integration_agent(model, tools, repo)
 
         # Create the workflow
-        workflow = StateGraph(IIoTState)
+        workflow = StateGraph(IIoTState, ChatContext)
         
         # Add nodes
         workflow.add_node("supervisor", self.call_supervisor)
@@ -106,10 +106,10 @@ class IIoTAIApp(BaseAIApp):
         self.model = model
         self.repo = repo
 
-    def call_supervisor(self, state: IIoTState, config: RunnableConfig) -> IIoTState:
-        conf = config.get(CONF)
-        customer_id = conf.get("customer_id")
-        customer = self.repo.find_customer(customer_id)
+    def call_supervisor(self, state: IIoTState, runtime: Runtime[ChatContext]) -> IIoTState:
+        ctx = runtime.context
+
+        customer = self.repo.find_customer(ctx.customer_id)
 
         existing_customer = None
         if customer:
@@ -173,14 +173,14 @@ class IIoTAIApp(BaseAIApp):
         return {"messages": [tool_msg]}
 
 
-    def update_customer(self, state: IIoTState, config: RunnableConfig) -> IIoTState:
+    def update_customer(self, state: IIoTState, runtime: Runtime[ChatContext]) -> IIoTState:
+        ctx = runtime.context
+
         ai_msg = state["messages"][-1]
         tool_call = ai_msg.tool_calls[0]
 
         # add long-term memory to the model
-        conf = config.get(CONF)
-        customer_id = conf.get("customer_id")
-        customer = self.repo.find_customer(customer_id)
+        customer = self.repo.find_customer(ctx.customer_id)
 
         existing = {
             "Customer": customer.model_dump() if customer else {},
@@ -230,7 +230,7 @@ class IIoTAIApp(BaseAIApp):
         return {"messages": [tool_msg]}
 
 
-    def call_survey_agent(self, state: IIoTState, config: RunnableConfig) -> IIoTState:
+    def call_survey_agent(self, state: IIoTState) -> IIoTState:
         ai_msg = state["messages"][-1]
         tool_call = ai_msg.tool_calls[0]
         tool_msg = ToolMessage(
@@ -242,7 +242,7 @@ class IIoTAIApp(BaseAIApp):
             response = self.survey_agent.invoke({
                 "messages": state["messages"][:-1],
                 "supervisor_message": tool_call["args"]["supervisor_message"],
-            }, config)
+            })
             tool_msg.content = response["messages"][-1].content
 
         except Exception as e:
@@ -252,7 +252,7 @@ class IIoTAIApp(BaseAIApp):
         return {"messages": [tool_msg]}
 
 
-    async def call_integration_agent(self, state: IIoTState, config: RunnableConfig) -> IIoTState:
+    async def call_integration_agent(self, state: IIoTState) -> IIoTState:
         ai_msg = state["messages"][-1]
         tool_call = ai_msg.tool_calls[0]
         tool_msg = ToolMessage(
@@ -264,7 +264,7 @@ class IIoTAIApp(BaseAIApp):
             response = await self.integration_agent.ainvoke({
                 "messages": state["messages"][:-1],
                 "supervisor_message": tool_call["args"]["supervisor_message"],
-            }, config)
+            })
             tool_msg.content = response["messages"][-1].content
 
         except Exception as e:

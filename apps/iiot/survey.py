@@ -1,15 +1,16 @@
 from typing import Literal, Optional, TypedDict
 
-from langchain.chat_models.base import BaseChatModel
-from langchain_core.messages import ToolMessage, SystemMessage, trim_messages, merge_message_runs
-from langchain_core.runnables import RunnableConfig
+from langchain_core.messages import merge_message_runs
+from langchain.chat_models import BaseChatModel
+from langchain.messages import trim_messages, ToolMessage, SystemMessage
 from langgraph.graph import StateGraph, START
-from langgraph.constants import CONF
-from langgraph.graph.graph import CompiledGraph
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from trustcall import create_extractor
 
+from protocol import ChatContext
 from .model import IIoTRepositoryProtocol, IIoTState, SurveyFactory
 
 
@@ -45,16 +46,16 @@ def create_survey_agent(
     checkpointer: Optional[Checkpointer] = None,
     store: Optional[BaseStore] = None,
     name: str = "survey_agent",
-) -> CompiledGraph:
+) -> CompiledStateGraph:
 
     # Create the extractor
     extractor = create_extractor(model, tools=[SurveyFactory], tool_choice="SurveyFactory")
 
-    def call_model(state: IIoTState, config: RunnableConfig) -> IIoTState:
+    def call_model(state: IIoTState, runtime: Runtime[ChatContext]) -> IIoTState:
+        ctx = runtime.context
+
         # add long-term memory to the model
-        conf = config.get(CONF)
-        customer_id = conf.get("customer_id")
-        surveys = repo.list_surveys(customer_id)
+        surveys = repo.list_surveys(ctx.customer_id)
 
         # TODO: only one survey for now
         existing_survey = None
@@ -110,14 +111,14 @@ def create_survey_agent(
         return {"messages": [tool_msg]}
 
 
-    def update_survey(state: IIoTState, config: RunnableConfig) -> IIoTState:
+    def update_survey(state: IIoTState, runtime: Runtime[ChatContext]) -> IIoTState:
+        ctx = runtime.context
+
         ai_msg = state["messages"][-1]
         tool_call = ai_msg.tool_calls[0]
 
         # add long-term memory to the model
-        conf = config.get(CONF)
-        customer_id = conf.get("customer_id")
-        surveys = repo.list_surveys(customer_id)
+        surveys = repo.list_surveys(ctx.customer_id)
         
         # TODO: only one survey for now
         survey = surveys[0] if len(surveys) > 0 else None
@@ -168,7 +169,7 @@ def create_survey_agent(
 
 
     # Create the workflow
-    workflow = StateGraph(IIoTState)
+    workflow = StateGraph(IIoTState, ChatContext)
     
     # Add nodes
     workflow.add_node("model", call_model)

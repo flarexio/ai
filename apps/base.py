@@ -1,7 +1,8 @@
 from abc import abstractmethod
 from typing import AsyncIterator
 
-from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
+from langchain.messages import AIMessageChunk, HumanMessage, ToolMessage
+from langgraph.graph.state import CompiledStateGraph
 
 from protocol import AIAppProtocol, AppInfo, ChatContext, MessageChunk, Role, ToolCall
 
@@ -9,7 +10,7 @@ from protocol import AIAppProtocol, AppInfo, ChatContext, MessageChunk, Role, To
 class BaseAIApp(AIAppProtocol):
     """Base implementation for AI Apps with default ainvoke and astream."""
     
-    def __init__(self, app):
+    def __init__(self, app: CompiledStateGraph):
         self.app = app
     
     @abstractmethod
@@ -45,14 +46,16 @@ class BaseAIApp(AIAppProtocol):
         config = {
             "configurable": { 
                 "thread_id": ctx.session_id, 
-                "user_id": ctx.user_id,
-                "customer_id": ctx.customer_id,
-                "workspace_id": ctx.workspace_id,
             }
         }
+
         messages = [HumanMessage(content=content)]
         try:
-            response = await self.app.ainvoke({"messages": messages}, config)
+            response = await self.app.ainvoke(
+                {"messages": messages}, 
+                config,
+                context=ctx,
+            )
             return response["messages"][-1].content
         except Exception as e:
             print(f"Error in ainvoke: {e}")

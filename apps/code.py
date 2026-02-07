@@ -1,13 +1,12 @@
-from langchain.chat_models.base import init_chat_model
-from langchain_core.messages import AnyMessage, SystemMessage
-from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool
+from langchain.agents import create_agent
+from langchain.agents.middleware import dynamic_prompt, ModelRequest
+from langchain.chat_models import init_chat_model
+from langchain.messages import SystemMessage
+from langchain.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.constants import CONF
-from langgraph.prebuilt import create_react_agent
-from langgraph.prebuilt.chat_agent_executor import AgentState
 from langgraph.store.base import BaseStore
 
+from protocol import ChatContext
 from .base import BaseAIApp
 
 
@@ -67,14 +66,15 @@ Always explain your mounting strategy and verify the image's default directories
 
 class CodeAIApp(BaseAIApp):
     def __init__(self, memory: BaseCheckpointSaver, store: BaseStore, toolkit: dict[str, list[BaseTool]]):
-        model = init_chat_model("openai:gpt-4.1-mini")
+        model = init_chat_model("openai:gpt-5-mini")
 
         tools = toolkit["mcpblade"] + toolkit["filesystem"]
 
-        def prompt(state: AgentState, config: RunnableConfig) -> list[AnyMessage]:
-            conf = config.get(CONF, {})
-            # workspace_id = conf.get("workspace_id", "flarex")
-            workspace_id = "flarex"
+        @dynamic_prompt
+        def prompt(request: ModelRequest) -> SystemMessage:
+            ctx: ChatContext = request.runtime.context
+
+            workspace_id = ctx.workspace_id or "flarex"
             workspace_path = f"/home/ar0660/.flarex/forge/workspaces/{workspace_id}"
 
             system_prompt = SYSTEM_INSTRUCTION.format(
@@ -82,13 +82,11 @@ class CodeAIApp(BaseAIApp):
                 workspace_path=workspace_path,
             )
 
-            return [
-                SystemMessage(content=system_prompt),
-                *state["messages"]
-            ]
+            return SystemMessage(content=system_prompt)
 
-        self.app = create_react_agent(model, tools,
-            prompt=prompt,
+        self.app = create_agent(model, tools,
+            middleware=[prompt],
+            context_schema=ChatContext,
             checkpointer=memory,
             store=store,
         )

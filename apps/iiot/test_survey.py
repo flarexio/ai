@@ -1,7 +1,7 @@
 import pytest
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from langchain.chat_models import init_chat_model
+from langchain.messages import AIMessage, HumanMessage, SystemMessage
 from trustcall import create_extractor
 
 from .model import Customer, SurveyFactory
@@ -9,7 +9,7 @@ from .model import Customer, SurveyFactory
 
 @pytest.mark.skip(reason="costly")
 def test_customer_extractor_with_industry():
-    model = ChatOpenAI(model="gpt-4.1-mini")
+    model = init_chat_model("openai:gpt-5-mini")
     extractor = create_extractor(model, tools=[Customer], tool_choice="Customer")
 
     system_prompt = """
@@ -46,7 +46,7 @@ def test_customer_extractor_with_industry():
 
 @pytest.mark.skip(reason="costly")
 def test_customer_extractor_with_edge_id():
-    model = ChatOpenAI(model="gpt-4.1-mini")
+    model = init_chat_model("openai:gpt-5-mini")
     extractor = create_extractor(model, tools=[Customer], tool_choice="Customer")
 
     system_prompt = """
@@ -82,7 +82,7 @@ def test_customer_extractor_with_edge_id():
 
 @pytest.mark.skip(reason="costly")
 def test_survey_extractor():
-    model = ChatOpenAI(model="gpt-4.1-mini")
+    model = init_chat_model("openai:gpt-5-mini")
     extractor = create_extractor(model, tools=[SurveyFactory], tool_choice="SurveyFactory")
 
     system_prompt = """

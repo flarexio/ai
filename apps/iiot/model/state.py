@@ -1,6 +1,6 @@
 from pydantic import Field
 
-from langgraph.prebuilt.chat_agent_executor import AgentState
+from langchain.agents import AgentState
 
 
 class IIoTState(AgentState):

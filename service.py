@@ -3,7 +3,7 @@ from typing import AsyncIterator
 
 from decorator import logging
 from persistences.db.chat import ChatRepositoryProtocol
-from protocol import AIAppProtocol, ChatContext, ChatServiceProtocol, Message, MessageChunk, Session, Role
+from protocol import AIAppProtocol, ChatContext, ChatServiceProtocol, Message, MessageChunk, Session
 
 
 @logging

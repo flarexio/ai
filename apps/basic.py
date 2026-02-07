@@ -2,20 +2,21 @@ from typing import Literal, TypedDict, Optional
 from pydantic import BaseModel
 import uuid
 
-from langchain.chat_models.base import BaseChatModel, init_chat_model
-from langchain_core.messages import ToolMessage, SystemMessage, merge_message_runs, trim_messages
-from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool
+from langchain_core.messages import merge_message_runs
+from langchain.agents import create_agent
+from langchain.agents.middleware import dynamic_prompt, ModelRequest
+from langchain.chat_models import BaseChatModel, init_chat_model
+from langchain.messages import HumanMessage, ToolMessage, SystemMessage, trim_messages
+from langchain.tools import tool, BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.constants import CONF, CONFIG_KEY_STORE
 from langgraph.graph import MessagesState, StateGraph, START
-from langgraph.graph.graph import CompiledGraph
-from langgraph.prebuilt import create_react_agent
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
-from langgraph_supervisor import create_supervisor
 from langmem import create_manage_memory_tool, create_search_memory_tool
 from trustcall import create_extractor
 
+from protocol import ChatContext
 from .base import BaseAIApp
 
 
@@ -26,18 +27,17 @@ class Triple(BaseModel):
     object: str
     context: str | None = None
 
-def create_semantic_memory_manager(llm: BaseChatModel, memory: BaseCheckpointSaver, store: BaseStore) -> CompiledGraph:
-    async def prompt(state: MessagesState, config: RunnableConfig):
-        """Prepare messages with context from existing memories."""
-        conf = config.get(CONF)
-        store: BaseStore = conf.get(CONFIG_KEY_STORE)
-        user_id: str = conf.get("user_id")
+def create_semantic_memory_manager(llm: BaseChatModel, memory: BaseCheckpointSaver, store: BaseStore) -> CompiledStateGraph:
+
+    @dynamic_prompt
+    async def prompt(request: ModelRequest) -> SystemMessage:
+        ctx: ChatContext = request.runtime.context
 
         memories = None
-        if user_id:
-            memories = await store.asearch(
-                ("users", user_id, "triples"),
-                query=state["messages"][-1].content,
+        if ctx.user_id:
+            memories = await request.runtime.store.asearch(
+                ("users", ctx.user_id, "triples"),
+                query=request.messages[-1].content,  # use the latest user message as the query for relevant memories
             )
 
         system_prompt = f"""
@@ -51,18 +51,16 @@ def create_semantic_memory_manager(llm: BaseChatModel, memory: BaseCheckpointSav
         Use the manage_memory tool to update and contextualize existing memories, create new ones, or delete old ones that are no longer valid.
         You can also expand your search of existing memories to augment using the search tool."""
         
-        return [
-            SystemMessage(content=system_prompt),
-            *state["messages"]
-        ]
+        return SystemMessage(content=system_prompt)
 
-    return create_react_agent(
+    return create_agent(
         llm,
-        prompt=prompt,
         tools=[
             create_manage_memory_tool(("users", "{user_id}", "triples"), schema=Triple),
             create_search_memory_tool(("users", "{user_id}", "triples")),
         ],
+        middleware=[prompt],
+        context_schema=ChatContext,
         checkpointer=memory,
         store=store,
         name="semantic_memory_manager"
@@ -75,20 +73,18 @@ class UserProfile(BaseModel):
     language: Optional[str] = None
     timezone: Optional[str] = None
 
-def create_user_profile_manager(llm: BaseChatModel, memory: BaseCheckpointSaver, store: BaseStore) -> CompiledGraph:
+def create_user_profile_manager(llm: BaseChatModel, memory: BaseCheckpointSaver, store: BaseStore) -> CompiledStateGraph:
 
     class UpdateMemory(TypedDict):
         """ Decision on what memory type to update """
         update_type: Literal["user"]
 
 
-    async def call_model(state: MessagesState, config: RunnableConfig):
-        conf = config.get(CONF)
-        store: BaseStore = conf.get(CONFIG_KEY_STORE)
-        user_id: str = conf.get("user_id")
+    async def call_model(state: MessagesState, runtime: Runtime[ChatContext]):
+        ctx = runtime.context
 
-        results = await store.asearch(
-            ("users", user_id, "profile")
+        results = await runtime.store.asearch(
+            ("users", ctx.user_id, "profile")
         )
 
         profile = None
@@ -152,13 +148,11 @@ def create_user_profile_manager(llm: BaseChatModel, memory: BaseCheckpointSaver,
         tool_choice="UserProfile",
     )
 
-    async def update_user(state: MessagesState, config: RunnableConfig) -> MessagesState:
-        conf = config.get(CONF)
-        store: BaseStore = conf.get(CONFIG_KEY_STORE)
-        user_id: str = conf.get("user_id")
+    async def update_user(state: MessagesState, runtime: Runtime[ChatContext]) -> MessagesState:
+        ctx = runtime.context
 
-        results = await store.asearch(
-            ("users", user_id, "profile")
+        results = await runtime.store.asearch(
+            ("users", ctx.user_id, "profile")
         )
 
         id = str(uuid.uuid4())
@@ -188,7 +182,7 @@ def create_user_profile_manager(llm: BaseChatModel, memory: BaseCheckpointSaver,
         )
         updated_messages = list(merge_message_runs(messages=[SystemMessage(content=prompt)] + recent_messages[:-1]))
 
-        result = extractor.invoke({
+        result = await extractor.ainvoke({
             "messages": updated_messages,
             "existing": existing,
         })
@@ -201,8 +195,8 @@ def create_user_profile_manager(llm: BaseChatModel, memory: BaseCheckpointSaver,
         if len(result["responses"]) == 0:
             return {"messages": [tool_msg]}
 
-        await store.aput(
-            ("users", user_id, "profile"),
+        await runtime.store.aput(
+            ("users", ctx.user_id, "profile"),
             key=id,
             value=result["responses"][0].model_dump(),
         )
@@ -210,7 +204,8 @@ def create_user_profile_manager(llm: BaseChatModel, memory: BaseCheckpointSaver,
         tool_msg.content = "updated user"
         return {"messages": [tool_msg]}
 
-    workflow = StateGraph(MessagesState)
+
+    workflow = StateGraph(MessagesState, ChatContext)
     workflow.add_node("manager", call_model)
     workflow.add_node("update_user", update_user)
 
@@ -226,15 +221,27 @@ def create_user_profile_manager(llm: BaseChatModel, memory: BaseCheckpointSaver,
 
 class BasicAIApp(BaseAIApp):
     def __init__(self, memory: BaseCheckpointSaver, store: BaseStore, toolkit: dict[str, list[BaseTool]]):
-        llm = init_chat_model("openai:gpt-4o-mini")
+        llm = init_chat_model("openai:gpt-5-mini")
 
         tools = toolkit["mcpblade"]
 
         # Create a semantic memory manager
         semantic_memory_manager = create_semantic_memory_manager(llm, memory, store)
 
+        @tool("semantic_memory_manager", description="Agent for managing semantic memory")
+        async def call_semantic_memory_manager(query: str):
+            result = await semantic_memory_manager.ainvoke({"messages": [ HumanMessage(content=query) ]})
+            return result["messages"][-1].content
+
+
         # Create a User Profile manager
         user_profile_manager = create_user_profile_manager(llm, memory, store)
+
+        @tool("user_profile_manager", description="Agent for managing user profiles")
+        async def call_user_profile_manager(query: str):
+            result = await user_profile_manager.ainvoke({"messages": [ HumanMessage(content=query) ]})
+            return result["messages"][-1].content
+
 
         system_prompt = """
         You are a helpful AI assistant coordinating two specialized agents:
@@ -252,15 +259,14 @@ class BasicAIApp(BaseAIApp):
         Do not execute actions directly; always delegate to the correct agent based on the request type.
         """
 
-        self.app = create_supervisor(
-            agents=[
-                semantic_memory_manager,
-                user_profile_manager,
-            ],
-            model=llm,
-            tools=tools,
-            prompt=system_prompt,
-        ).compile(checkpointer=memory, store=store)
+        self.app = create_agent(
+            llm,
+            [call_semantic_memory_manager, call_user_profile_manager] + tools,
+            system_prompt=system_prompt,
+            context_schema=ChatContext,
+            checkpointer=memory,
+            store=store,
+        )
 
     def id(self) -> str:
         return "basic"

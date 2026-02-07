@@ -1,16 +1,16 @@
 from pydantic import Field
 from typing import Literal, Optional, TypedDict
 
-from langchain.chat_models.base import BaseChatModel
-from langchain_core.messages import ToolMessage, SystemMessage, trim_messages
-from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool
-from langgraph.constants import CONF
+from langchain.chat_models import BaseChatModel
+from langchain.messages import ToolMessage, SystemMessage, trim_messages
+from langchain.tools import BaseTool
 from langgraph.graph import StateGraph, START
-from langgraph.graph.graph import CompiledGraph
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
+from protocol import ChatContext
 from .mapping import create_mapping_agent
 from .connectivity import create_connectivity_agent
 from ..model import IIoTRepositoryProtocol, IIoTState
@@ -73,17 +73,17 @@ def create_integration_agent(
     checkpointer: Optional[Checkpointer] = None,
     store: Optional[BaseStore] = None,
     name: str = "integration_agent",
-) -> CompiledGraph:
+) -> CompiledStateGraph:
 
     # Create the agents
     mapping_agent = create_mapping_agent(model, tools, repo)
     connectivity_agent = create_connectivity_agent(model, tools, repo)
     # deployment_agent = create_deployment_agent(model, repo)
 
-    def call_supervisor(state: IIoTState, config: RunnableConfig) -> IIoTState:
-        conf = config.get(CONF)
-        customer_id = conf.get("customer_id")
-        factories = repo.list_factories(customer_id)
+    def call_supervisor(state: IIoTState, runtime: Runtime[ChatContext]) -> IIoTState:
+        ctx = runtime.context
+
+        factories = repo.list_factories(ctx.customer_id)
 
         # TODO: only one factory for now
         existing_factory = None
@@ -147,7 +147,7 @@ def create_integration_agent(
         return {"messages": [tool_msg]}
 
 
-    async def call_mapping_agent(state: IIoTState, config: RunnableConfig) -> IIoTState:
+    async def call_mapping_agent(state: IIoTState) -> IIoTState:
         ai_msg = state["messages"][-1]
         tool_call = ai_msg.tool_calls[0]
         tool_msg = ToolMessage(
@@ -159,7 +159,7 @@ def create_integration_agent(
             response = await mapping_agent.ainvoke({
                 "messages": state["messages"][:-1],
                 "supervisor_message": tool_call["args"]["supervisor_message"],
-            }, config)
+            })
             tool_msg.content = response["messages"][-1].content
         
         except Exception as e:
@@ -169,7 +169,7 @@ def create_integration_agent(
         return {"messages": [tool_msg]}
 
 
-    async def call_connectivity_agent(state: IIoTState, config: RunnableConfig) -> IIoTState:
+    async def call_connectivity_agent(state: IIoTState) -> IIoTState:
         ai_msg = state["messages"][-1]
         tool_call = ai_msg.tool_calls[0]
         tool_msg = ToolMessage(
@@ -181,7 +181,7 @@ def create_integration_agent(
             response = await connectivity_agent.ainvoke({
                 "messages": state["messages"][:-1],
                 "supervisor_message": tool_call["args"]["supervisor_message"],
-            }, config)
+            })
             tool_msg.content = response["messages"][-1].content
 
         except Exception as e:
@@ -192,7 +192,7 @@ def create_integration_agent(
 
 
     # Create the workflow
-    workflow = StateGraph(IIoTState)
+    workflow = StateGraph(IIoTState, ChatContext)
     
     # Add nodes
     workflow.add_node("supervisor", call_supervisor)
